@@ -1,0 +1,5 @@
+*.o
+*.so
+*.pyc
+pycoding_web.py
+__pycache__
