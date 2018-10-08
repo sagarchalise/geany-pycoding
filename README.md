@@ -14,7 +14,13 @@
  * `black` and `jedi` needs to be installed as well as your favorite linter. I use `flake8`.
  
  
+ 
 #### TODO
 
 * Run DBus Runner Automatically.
 * Give Option for formatter.
+
+#### Caveats
+
+* currently used `blackd` for formatting so uses `libsoup-2.4` .
+* Install with `pip install black[d]`. Uses default port used by `blackd`

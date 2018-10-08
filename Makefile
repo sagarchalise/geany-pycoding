@@ -1,8 +1,8 @@
 all: build
 	
 build:	
-	gcc -DLOCALEDIR=\"\" -DGETTEXT_PACKAGE=\"pycoding\" -c ./pycoding.c -fPIC `pkg-config --cflags geany`
-	gcc pycoding.o -o pycoding.so -shared `pkg-config --libs geany`
+	gcc -DLOCALEDIR=\"\" -DGETTEXT_PACKAGE=\"pycoding\" -c ./pycoding.c -fPIC `pkg-config --cflags geany libsoup-2.4`
+	gcc pycoding.o -o pycoding.so -shared `pkg-config --libs geany libsoup-2.4`
 
 install: uninstall startinstall
 

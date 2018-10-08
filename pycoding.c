@@ -35,12 +35,12 @@
 #include "geanyplugin.h"	/* plugin API, always comes first */
 
 #include <gio/gio.h>
+#include <libsoup/soup.h>
 
 #define OBJECT_PATH "/org/gtk/GDBus/GeanyPyCodingObject"
 #define BUS_NAME "org.gtk.GDBus.GeanyPyCodingServer"
 #define INTERFACE_NAME "org.gtk.GDBus.GeanyPyCodingInterface"
-//#define GEANY_PYDBUS_BIN "pycoding.py"
-
+#define BLACKD_URL "http://127.0.0.1:45484"
 
 enum {
   KB_FORMAT_PYCODE,
@@ -48,7 +48,8 @@ enum {
 };
 GDBusConnection *jedi_connection;
 static GtkWidget *main_menu_item = NULL;
-gboolean dbus_running = FALSE;
+//gboolean dbus_running = FALSE;
+SoupSession *black_session;
 
 gboolean check_doc(GeanyDocument *doc){
     if(!DOC_VALID(doc)){
@@ -57,6 +58,28 @@ gboolean check_doc(GeanyDocument *doc){
     if(doc->file_type->id != GEANY_FILETYPES_PYTHON){
 	return FALSE;
     }
+}
+static void
+format_callback (SoupSession *session, SoupMessage *msg, gpointer user_data)
+{
+    gint pos;
+    ScintillaObject *sci = user_data;
+    switch(msg->status_code){
+	case SOUP_STATUS_OK:
+	    pos = sci_get_current_position(sci);
+	    sci_set_text(sci, msg->response_body->data);
+	    sci_set_current_position(sci, pos, TRUE);
+	    break;
+	case SOUP_STATUS_NO_CONTENT:
+	    break;
+	case SOUP_STATUS_INTERNAL_SERVER_ERROR:
+	case SOUP_STATUS_BAD_REQUEST:
+	    msgwin_compiler_add(COLOR_DARK_RED, "Formatting Issue: %s", msg->response_body->data);
+	    break;
+	default:
+	    msgwin_compiler_add(COLOR_DARK_RED, "Formatting Issue: Is blackd running ?");
+    }
+    keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
 }
 
 static void on_document_save(GObject *obj, GeanyDocument *doc, gpointer user_data)
@@ -67,37 +90,49 @@ static void on_document_save(GObject *obj, GeanyDocument *doc, gpointer user_dat
     msgwin_clear_tab(MSG_MESSAGE);
     msgwin_clear_tab(MSG_COMPILER);
     GeanyPlugin *plugin = user_data;
-    jedi_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
-    if(jedi_connection == NULL){
-	msgwin_compiler_add_string(COLOR_DARK_RED, "Couldnot Connect.");
-	return;
-    }
-    GVariant *reply;
-    reply = g_dbus_connection_call_sync(jedi_connection,
-                             BUS_NAME,
-                             OBJECT_PATH,
-                             INTERFACE_NAME,
-                             "Format",
-                             g_variant_new ("(si)",
-                                            sci_get_contents(doc->editor->sci, -1),
-					    MAX(plugin->geany_data->editor_prefs->long_line_column, plugin->geany_data->editor_prefs->line_break_column)),
-                             NULL,
-                             G_DBUS_CALL_FLAGS_NONE,
-                             -1,
-			     NULL,
-			    NULL);
-    if(reply == NULL){
-	keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
-    }
-    else{
-	gchar *msg;
-	g_variant_get(reply, "(&s)", &msg);
-	gint pos = sci_get_current_position(doc->editor->sci);
-	sci_set_text(doc->editor->sci, msg);
-	sci_set_current_position(doc->editor->sci, pos, TRUE);
-	keybindings_send_command(GEANY_KEY_GROUP_FILE, GEANY_KEYS_FILE_SAVE);
-    }
-    g_variant_unref(reply);
+    gchar *line_length;
+    gint len = sci_get_length(doc->editor->sci);
+    SoupMessage *msg;
+    msg = soup_message_new (SOUP_METHOD_POST, BLACKD_URL);
+    line_length = g_strdup_printf("%i", MAX(plugin->geany_data->editor_prefs->long_line_column, plugin->geany_data->editor_prefs->line_break_column));
+    GString *content_type = g_string_sized_new(40); 
+    g_string_append(content_type, "text/plain; charset=");
+    g_string_append(content_type, doc->encoding);
+    soup_message_headers_append(msg->request_headers, "X-Line-Length", line_length);
+    soup_message_headers_append(msg->request_headers, "X-Fast-Or-Safe", "fast");
+    soup_message_set_request(msg, content_type->str, SOUP_MEMORY_STATIC, sci_get_contents(doc->editor->sci, len+1), len);
+    soup_session_queue_message(black_session, msg, format_callback, doc->editor->sci);
+    //GVariant *reply;
+    //reply = g_dbus_connection_call_sync(jedi_connection,
+                             //BUS_NAME,
+                             //OBJECT_PATH,
+                             //INTERFACE_NAME,
+                             //"Format",
+                             //g_variant_new ("(si)",
+                                            //sci_get_contents(doc->editor->sci, -1),
+					    //MAX(plugin->geany_data->editor_prefs->long_line_column, plugin->geany_data->editor_prefs->line_break_column)),
+                             //NULL,
+                             //G_DBUS_CALL_FLAGS_NONE,
+                             //-1,
+			     //NULL,
+			    //NULL);
+    //if(reply == NULL){
+	//keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
+    //}
+    //else{
+	//gchar *msg;
+	//g_variant_get(reply, "(&s)", &msg);
+	//gint pos = sci_get_current_position(doc->editor->sci);
+	//sci_set_text(doc->editor->sci, msg);
+	//sci_set_current_position(doc->editor->sci, pos, TRUE);
+	//keybindings_send_command(GEANY_KEY_GROUP_FILE, GEANY_KEYS_FILE_SAVE);
+    //}
+    //g_variant_unref(reply);
+    g_string_free(content_type, TRUE);
+    g_free(line_length);
+    //g_free(content_type);
+    //g_free(content);
+    //g_object_unref(msg);
 }
 static void on_document_action(GObject *obj, GeanyDocument *doc, gpointer user_data)
 {
@@ -225,7 +260,6 @@ static gboolean on_editor_notify(GObject *object, GeanyEditor *editor,
 	if(!check_doc(editor->document)){
 	    return FALSE;
 	}
-	GeanyPlugin *plugin = data;
         gint lexer, pos, style;
 	/* For detailed documentation about the SCNotification struct, please see
 	 * http://www.scintilla.org/ScintillaDoc.html#Notifications. */
@@ -238,14 +272,15 @@ static gboolean on_editor_notify(GObject *object, GeanyEditor *editor,
 	/* don't autocomplete in comments and strings */
 	if (!highlighting_is_code_style(lexer, style))
 		return FALSE;
+	GeanyPlugin *plugin = data;
 	switch (nt->nmhdr.code)
 	{
 		case SCN_CHARADDED:
-                        complete_python(editor, nt->ch, NULL, plugin->geany_data->app->project);
-                        break;
+		    complete_python(editor, nt->ch, NULL, plugin->geany_data->app->project);
+		    break;
                 case SCN_AUTOCSELECTION:
-                        complete_python(editor, nt->ch, nt->text, plugin->geany_data->app->project);
-                        break;
+		    complete_python(editor, nt->ch, nt->text, plugin->geany_data->app->project);
+		    break;
 	}
 
 	return FALSE;
@@ -257,9 +292,9 @@ static PluginCallback demo_callbacks[] =
 	 * can prevent Geany from processing the notification. Use this with care. */
         {"document-open", (GCallback) & on_document_action, FALSE, NULL},
         {"document-activate", (GCallback) & on_document_action, FALSE, NULL},
-        {"document-save", (GCallback) & on_document_save, FALSE, NULL},
+        //{"document-save", (GCallback) & on_document_save, FALSE, NULL},
+        {"document-before-save", (GCallback) & on_document_save, FALSE, NULL},
 	{ "editor-notify", (GCallback) &on_editor_notify, FALSE, NULL },
-        //{"document-before-save", (GCallback) & on_document_save, FALSE, NULL},
 	{ NULL, NULL, FALSE, NULL }
 };
 
@@ -283,6 +318,7 @@ static gboolean demo_init(GeanyPlugin *plugin, gpointer data)
 	group = plugin_set_key_group (plugin, _("Format Python Code"), KB_COUNT, NULL);
 	keybindings_set_item (group, KB_FORMAT_PYCODE, NULL,
                         0, 0, "format_pycode", _("Format Python Code"), main_menu_item);
+	black_session = soup_session_new();
 	//gchar *config_dir = g_build_path(G_DIR_SEPARATOR_S,
 		//geany_data->app->configdir, "plugins", NULL);
 	//gchar *pycoding_dbus_path = g_build_path(G_DIR_SEPARATOR_S, config_dir,
@@ -302,6 +338,7 @@ static void demo_cleanup(GeanyPlugin *plugin, gpointer data)
 {
     g_dbus_connection_close_sync(jedi_connection, NULL, NULL);
     g_object_unref (jedi_connection);
+    g_object_unref(black_session);
     gtk_widget_destroy(main_menu_item);
 }
 
