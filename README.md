@@ -1,4 +1,4 @@
-# PyCoding Helper for geany
+# PyCoding Helper for [Geany](https://geany.org)
 
 
 #### Comes with:
@@ -8,10 +8,10 @@
  * Complete Python Code Based on [jedi](https://jedi.readthedocs.io/en/latest/).
  
  
- ##### Requirements:
+#### Requirements:
  
- * DBus Runner (bundled here)[https://github.com/sagarchalise/geany-pycoding/blob/master/pycoding.py] needs to be run manually.
- * `black` and `jedi` needs to be installed as well as your favorite linter. I use `flake8`.
+ * DBus Runner [bundled here](https://github.com/sagarchalise/geany-pycoding/blob/master/pycoding.py) needs to be run manually.
+ * `black` and `jedi` needs to be installed as well as your favorite linter. I use `flake8`. All in `python3`
  
  
  
@@ -22,5 +22,7 @@
 
 #### Caveats
 
-* currently used `blackd` for formatting so uses `libsoup-2.4` .
+* currently using `blackd` for formatting so uses `libsoup-2.4` for **HTTP** request.
 * Install with `pip install black[d]`. Uses default port used by `blackd`
+
+#### WARNING: VERY BUGGY 

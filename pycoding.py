@@ -17,10 +17,10 @@
 
 import os
 import glob
-import sys
 from gi.repository import Gio, GObject, GLib
 
 import black
+
 try:
     import jedi
 except ImportError:
@@ -96,40 +96,25 @@ print("if", interface_info)
 main_loop = GObject.MainLoop()
 
 
-def static_vars(**kwargs):
-    def decorate(func):
-        for k, v in kwargs.items():
-            setattr(func, k, v)
-        return func
-
-    return decorate
-
-@static_vars(swap_it=0)
 def on_timeout_cb(connection):
     return True
 
 
-sys_path = sys.path
-
-
-def get_path_for_completion(proj_name=None):
+def get_path_for_completions(sys_path, proj_name=None):
     if proj_name:
-        append_project_venv(proj_name)
+        append_project_venv(proj_name, sys_path)
     faked_gir_path = os.path.join(USER_HOME, ".cache/fakegir")
     if os.path.isdir(faked_gir_path):
-        path = [faked_gir_path] + sys_path
-    else:
-        print("Support for GIR may be missing")
-        path = sys_path
-    return path
+        append_to_path(faked_gir_path, sys_path)
+    return sys_path
 
 
-def append_sys_path(path):
+def append_to_path(path, sys_path):
     if path and path not in sys_path:
         sys_path.append(path)
 
 
-def append_project_venv(proj_name):
+def append_project_venv(proj_name, sys_path):
     if not proj_name:
         return
     venv_pth = os.path.join(USER_HOME, ".virtualenvs")
@@ -146,11 +131,11 @@ def append_project_venv(proj_name):
             break
     else:  # nobreak
         return
-    sys_path.append(proj_name)
+    append_to_path(proj_name, sys_path)
 
 
-def jedi_complete(buffer, fp=None, path=None, text=None):
-    script = jedi.Script(buffer, line=None, column=None, path=fp, sys_path=path)
+def jedi_complete(buffer, fp=None, text=None, sys_path=None):
+    script = jedi.Script(buffer, path=fp, sys_path=sys_path)
     data = ""
     doc = None
     for count, complete in enumerate(script.completions()):
@@ -162,7 +147,7 @@ def jedi_complete(buffer, fp=None, path=None, text=None):
                 continue
             if not (complete.is_keyword or complete.type == "module"):
                 doc = complete.docstring()
-                return doc or ''
+                return doc or ""
             break
         if count > 0:
             data += "\n"
@@ -177,6 +162,7 @@ def jedi_complete(buffer, fp=None, path=None, text=None):
             break
     return data
 
+
 @dump_args
 def handle_method_call(
     connection, sender, object_path, interface_name, method_name, parameters, invocation
@@ -188,24 +174,23 @@ def handle_method_call(
         file_path = parm_unpacked[1]
         project_path = parm_unpacked[2]
         doc_text = parm_unpacked[3] or None
-        path = get_path_for_completion(os.path.basename(project_path or ""))
+        env_path = jedi.get_default_environment().get_sys_path()
+        path = get_path_for_completions(env_path, os.path.basename(project_path or ""))
         try:
-            completions = jedi_complete(buffer, fp=file_path, path=path, text=doc_text)
+            completions = jedi_complete(buffer, fp=file_path, text=doc_text, sys_path=path)
         except Exception as error:
             invocation.return_error_literal(
                 Gio.io_error_quark(), Gio.IOErrorEnum.FAILED_HANDLED, str(error)
             )
         else:
             invocation.return_value(GLib.Variant("(s)", (completions,)))
-    if method_name == "Format":
+    elif method_name == "Format":
         parm_unpacked = parameters.unpack()
         print(repr(parameters), parm_unpacked)
         content = parm_unpacked[0]
         line_length = parm_unpacked[1]
         try:
-            formatted = black.format_file_contents(
-                content, line_length=line_length, fast=True 
-            )
+            formatted = black.format_file_contents(content, line_length=line_length, fast=True)
         except Exception as error:
             print(error)
             invocation.return_error_literal(
@@ -217,7 +202,7 @@ def handle_method_call(
         print("Not handled")
         invocation.return_error_literal(
             Gio.io_error_quark(), Gio.IOErrorEnum.FAILED_HANDLED, "Error"
-            )
+        )
 
 
 @dump_args
@@ -258,5 +243,3 @@ owner_id = Gio.bus_own_name(
 )
 main_loop.run()
 Gio.bus_unown_name(owner_id)
-
-
