@@ -18,11 +18,12 @@
 #### TODO
 
 * Run DBus Runner Automatically.
+* Use single communication channel i.e. **HTTP** or **DBus**
 * Give Option for formatter.
 
 #### Caveats
 
-* currently using `blackd` for formatting so uses `libsoup-2.4` for **HTTP** request.
-* Install with `pip install black[d]`. Uses default port used by `blackd`
+* currently using `blackd` for formatting so uses `libsoup-2.4` for **HTTP** request. Install with `pip install black[d]`. Uses default port used by `blackd`
+* [pygobject](https://pygobject.readthedocs.io/en/latest/getting_started.html) is required.
 
 #### WARNING: VERY BUGGY 

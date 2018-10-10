@@ -141,25 +141,24 @@ static void on_document_action(GObject *obj, GeanyDocument *doc, gpointer user_d
     }
     keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK); 
 }
-static gboolean show_autocomplete(ScintillaObject *sci, gsize rootlen, const gchar *words, gsize len)
+static void show_autocomplete(ScintillaObject *sci, gsize rootlen, GString *words)
 {
+	// copied as is from geany
 	/* hide autocompletion if only option is already typed */
-	if (rootlen >= len ||
-		(words[rootlen] == '?' && rootlen >= len - 2))
+	if (rootlen >= words->len ||
+		(words->str[rootlen] == '?' && rootlen >= words->len - 2))
 	{
 		sci_send_command(sci, SCI_AUTOCCANCEL);
-		return FALSE;
+		return;
 	}
-	scintilla_send_message(sci, SCI_AUTOCSHOW, rootlen, (sptr_t) words);
-	return TRUE;
+	scintilla_send_message(sci, SCI_AUTOCSHOW, rootlen, (sptr_t) words->str);
 }
-static gboolean complete_python(GeanyEditor *editor, int ch, const gchar *text, GeanyProject *project){
-    gboolean ret = FALSE;
+static void complete_python(GeanyEditor *editor, int ch, const gchar *text, GeanyData *geany_data){
     gint line, pos, rootlen, start;
     gboolean import_check = FALSE;
     ScintillaObject *sci;
     gchar *word_at_pos;
-    g_return_val_if_fail(editor != NULL, ret);
+    g_return_if_fail(editor != NULL);
     if (text == NULL){
         switch(ch){
                 case '\r':
@@ -174,7 +173,7 @@ static gboolean complete_python(GeanyEditor *editor, int ch, const gchar *text, 
 		case '\'':
 		case '}':
 		case ':':
-                        return ret;
+                        return;
         }
         
     }
@@ -182,7 +181,7 @@ static gboolean complete_python(GeanyEditor *editor, int ch, const gchar *text, 
     pos = sci_get_current_position(sci);
     line = sci_get_current_line(sci)+1;
     word_at_pos = g_strchug(sci_get_line(sci, line-1));
-    g_return_val_if_fail(word_at_pos != NULL, ret);
+    g_return_if_fail(word_at_pos != NULL);
     if(g_str_has_prefix(word_at_pos, "import") || g_str_has_prefix(word_at_pos, "from")){
 	    start = sci_get_position_from_line(sci, line-1);
 	    import_check = TRUE;
@@ -192,7 +191,7 @@ static gboolean complete_python(GeanyEditor *editor, int ch, const gchar *text, 
     }              
     g_free(word_at_pos);
     word_at_pos = editor_get_word_at_pos(editor, pos, GEANY_WORDCHARS".");
-    g_return_val_if_fail(word_at_pos != NULL, ret);
+    g_return_if_fail(word_at_pos != NULL);
     rootlen = strlen(word_at_pos);
     if (strstr(word_at_pos, ".") != NULL){
 	    g_free(word_at_pos);
@@ -207,14 +206,14 @@ static gboolean complete_python(GeanyEditor *editor, int ch, const gchar *text, 
     }
     else if((!import_check && rootlen < 2) || rootlen == 0 ){
 	    g_free(word_at_pos);
-	    return ret;
+	    return;
     }
     msgwin_clear_tab(MSG_COMPILER);
     msgwin_clear_tab(MSG_MESSAGE);
     jedi_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
     if(jedi_connection == NULL){
 	msgwin_msg_add_string(COLOR_RED, -1, editor->document, "PyCoding Completion Issue. No Connection");
-	return ret;
+	return;
     }
     GVariant *reply;
     reply = g_dbus_connection_call_sync (jedi_connection,
@@ -222,33 +221,32 @@ static gboolean complete_python(GeanyEditor *editor, int ch, const gchar *text, 
                              OBJECT_PATH,
                              INTERFACE_NAME,
                              "Complete",
-                             g_variant_new ("(ssss)",
+                             g_variant_new ("(sisss)",
                                             sci_get_contents_range(sci, start, pos),
+					    geany_data->editor_prefs->autocompletion_max_entries,
                                             (editor->document->real_path==NULL)?editor->document->file_name:editor->document->real_path,
-					    (project == NULL)?"":project->base_path,
+					    (geany_data->app->project == NULL)?"":geany_data->app->project->base_path,
 					    (text==NULL)?"":text),
                              NULL,
                              G_DBUS_CALL_FLAGS_NONE,
                              -1,
                              NULL,
                              NULL);
-    gchar *msg;
+    const gchar *msg;
     g_variant_get(reply, "(&s)", &msg);
-    gint len = g_utf8_strlen(msg, -1);
+    g_return_if_fail(msg != NULL);
+    GString *words = g_string_new(msg);
     if(text == NULL){
-	ret = show_autocomplete(editor->sci, rootlen, msg, len);
+	show_autocomplete(editor->sci, rootlen, words);
     }
     else{
-	if(len > 6){
-		msgwin_msg_add_string(COLOR_BLACK, line-1, editor->document, msg);
+	if(words->len > 6){
+		msgwin_msg_add_string(COLOR_BLACK, line-1, editor->document, words->str);
 		msgwin_switch_tab(MSG_MESSAGE, FALSE);
 	}
-	ret = FALSE;
     }
-    //g_free(buffer);
-    //g_free(msg);
     g_variant_unref(reply);
-    return ret;
+    g_string_free(words, TRUE);
     //g_dbus_connection_close_sync(jedi_connection, NULL, NULL);
 }
 static gboolean on_editor_notify(GObject *object, GeanyEditor *editor,
@@ -274,13 +272,11 @@ static gboolean on_editor_notify(GObject *object, GeanyEditor *editor,
 	switch (nt->nmhdr.code)
 	{
 		case SCN_CHARADDED:
-		    ret = complete_python(editor, nt->ch, NULL, plugin->geany_data->app->project);
+		    complete_python(editor, nt->ch, NULL, plugin->geany_data);
 		    break;
                 case SCN_AUTOCSELECTION:
-		    ret = complete_python(editor, nt->ch, nt->text, plugin->geany_data->app->project);
+		    complete_python(editor, nt->ch, nt->text, plugin->geany_data);
 		    break;
-		default:
-		    ret = FALSE;
 	}
 
 	return ret;
