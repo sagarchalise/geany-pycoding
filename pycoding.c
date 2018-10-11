@@ -63,23 +63,24 @@ static void
 format_callback (SoupSession *session, SoupMessage *msg, gpointer user_data)
 {
     gint pos;
-    ScintillaObject *sci = user_data;
+    GeanyEditor *editor = user_data;
     switch(msg->status_code){
 	case SOUP_STATUS_OK:
-	    pos = sci_get_current_position(sci);
-	    sci_set_text(sci, msg->response_body->data);
-	    sci_set_current_position(sci, pos, TRUE);
+	    pos = sci_get_current_position(editor->sci);
+	    sci_set_text(editor->sci, msg->response_body->data);
+	    sci_set_current_position(editor->sci, pos, TRUE);
+	    keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
 	    break;
 	case SOUP_STATUS_NO_CONTENT:
 	    break;
 	case SOUP_STATUS_INTERNAL_SERVER_ERROR:
 	case SOUP_STATUS_BAD_REQUEST:
-	    msgwin_compiler_add(COLOR_DARK_RED, "Formatting Issue: %s", msg->response_body->data);
+	    keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
 	    break;
 	default:
 	    msgwin_compiler_add(COLOR_DARK_RED, "Formatting Issue: Is blackd running ?");
+	    msgwin_switch_tab(MSG_COMPILER, FALSE);
     }
-    keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
 }
 
 static void on_document_save(GObject *obj, GeanyDocument *doc, gpointer user_data)
@@ -101,7 +102,7 @@ static void on_document_save(GObject *obj, GeanyDocument *doc, gpointer user_dat
     soup_message_headers_append(msg->request_headers, "X-Line-Length", line_length);
     soup_message_headers_append(msg->request_headers, "X-Fast-Or-Safe", "fast");
     soup_message_set_request(msg, content_type->str, SOUP_MEMORY_STATIC, sci_get_contents(doc->editor->sci, len+1), len);
-    soup_session_queue_message(black_session, msg, format_callback, doc->editor->sci);
+    soup_session_queue_message(black_session, msg, format_callback, doc->editor);
     //GVariant *reply;
     //reply = g_dbus_connection_call_sync(jedi_connection,
                              //BUS_NAME,
@@ -141,24 +142,24 @@ static void on_document_action(GObject *obj, GeanyDocument *doc, gpointer user_d
     }
     keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK); 
 }
-static void show_autocomplete(ScintillaObject *sci, gsize rootlen, GString *words)
+static void show_autocomplete(ScintillaObject *sci, gsize rootlen, const gchar *str, gsize len)
 {
 	// copied as is from geany
 	/* hide autocompletion if only option is already typed */
-	if (rootlen >= words->len ||
-		(words->str[rootlen] == '?' && rootlen >= words->len - 2))
+	if (rootlen >= len ||
+		(str[rootlen] == '?' && rootlen >= len - 2))
 	{
 		sci_send_command(sci, SCI_AUTOCCANCEL);
 		return;
 	}
-	scintilla_send_message(sci, SCI_AUTOCSHOW, rootlen, (sptr_t) words->str);
+	scintilla_send_message(sci, SCI_AUTOCSHOW, rootlen, (sptr_t) str);
 }
 static void complete_python(GeanyEditor *editor, int ch, const gchar *text, GeanyData *geany_data){
+    g_return_if_fail(editor != NULL);
     gint line, pos, rootlen, start;
     gboolean import_check = FALSE;
     ScintillaObject *sci;
     gchar *word_at_pos;
-    g_return_if_fail(editor != NULL);
     if (text == NULL){
         switch(ch){
                 case '\r':
@@ -235,19 +236,17 @@ static void complete_python(GeanyEditor *editor, int ch, const gchar *text, Gean
     const gchar *msg;
     g_variant_get(reply, "(&s)", &msg);
     g_return_if_fail(msg != NULL);
-    GString *words = g_string_new(msg);
+    gsize len = g_utf8_strlen(msg, -1);
     if(text == NULL){
-	show_autocomplete(editor->sci, rootlen, words);
+	show_autocomplete(editor->sci, rootlen, msg, len);
     }
     else{
-	if(words->len > 6){
-		msgwin_msg_add_string(COLOR_BLACK, line-1, editor->document, words->str);
+	if(len > 6){
+		msgwin_msg_add_string(COLOR_BLACK, line-1, editor->document, msg);
 		msgwin_switch_tab(MSG_MESSAGE, FALSE);
 	}
     }
     g_variant_unref(reply);
-    g_string_free(words, TRUE);
-    //g_dbus_connection_close_sync(jedi_connection, NULL, NULL);
 }
 static gboolean on_editor_notify(GObject *object, GeanyEditor *editor,
 								 SCNotification *nt, gpointer data)

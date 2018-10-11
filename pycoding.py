@@ -69,6 +69,7 @@ introspection_xml = """
   <interface name='{}'>
     <method name='Complete'>
       <arg type='s' name='content' direction='in'/>
+      <arg type='i' name='stop_len' direction='in'/>
       <arg type='s' name='file_path' direction='in'/>
       <arg type='s' name='project_path' direction='in'/>
       <arg type='s' name='doc_text' direction='in'/>
@@ -134,7 +135,7 @@ def append_project_venv(proj_name, sys_path):
     append_to_path(proj_name, sys_path)
 
 
-def jedi_complete(buffer, fp=None, text=None, sys_path=None):
+def jedi_complete(buffer, fp=None, text=None, sys_path=None, stop_len=25):
     script = jedi.Script(buffer, path=fp, sys_path=sys_path)
     data = ""
     doc = None
@@ -158,26 +159,29 @@ def jedi_complete(buffer, fp=None, text=None, sys_path=None):
             data += "?2"
         else:
             data += "?1"
-        if count == 24:
+        if count == stop_len:
             break
     return data
 
 
-@dump_args
+# @dump_args
 def handle_method_call(
     connection, sender, object_path, interface_name, method_name, parameters, invocation
 ):
     if method_name == "Complete":
         parm_unpacked = parameters.unpack()
-        print(repr(parameters), parm_unpacked)
         buffer = parm_unpacked[0]
-        file_path = parm_unpacked[1]
-        project_path = parm_unpacked[2]
-        doc_text = parm_unpacked[3] or None
+        print("In Complete")
+        stop_len = parm_unpacked[1]
+        file_path = parm_unpacked[2]
+        project_path = parm_unpacked[3]
+        doc_text = parm_unpacked[4] or None
         env_path = jedi.get_default_environment().get_sys_path()
         path = get_path_for_completions(env_path, os.path.basename(project_path or ""))
         try:
-            completions = jedi_complete(buffer, fp=file_path, text=doc_text, sys_path=path)
+            completions = jedi_complete(
+                buffer, fp=file_path, text=doc_text, sys_path=path, stop_len=stop_len
+            )
         except Exception as error:
             invocation.return_error_literal(
                 Gio.io_error_quark(), Gio.IOErrorEnum.FAILED_HANDLED, str(error)
@@ -186,7 +190,7 @@ def handle_method_call(
             invocation.return_value(GLib.Variant("(s)", (completions,)))
     elif method_name == "Format":
         parm_unpacked = parameters.unpack()
-        print(repr(parameters), parm_unpacked)
+        print("In Format")
         content = parm_unpacked[0]
         line_length = parm_unpacked[1]
         try:
