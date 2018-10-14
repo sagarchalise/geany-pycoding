@@ -164,6 +164,10 @@ static void complete_python(GeanyEditor *editor, int ch, const gchar *text, Gean
         switch(ch){
                 case '\r':
 		case '\n':
+		case ' ':
+		case '\t':
+		case '\v':
+		case '\f':
 		case '>':
 		case '/':
 		case '(':
