@@ -41,6 +41,7 @@
 #define BUS_NAME "org.gtk.GDBus.GeanyPyCodingServer"
 #define INTERFACE_NAME "org.gtk.GDBus.GeanyPyCodingInterface"
 #define BLACKD_URL "http://127.0.0.1:45484"
+#define JEDI_URL "http://127.0.0.1:45484/jedi"
 
 enum {
   KB_FORMAT_PYCODE,
@@ -103,37 +104,9 @@ static void on_document_save(GObject *obj, GeanyDocument *doc, gpointer user_dat
     soup_message_headers_append(msg->request_headers, "X-Fast-Or-Safe", "fast");
     soup_message_set_request(msg, content_type->str, SOUP_MEMORY_STATIC, sci_get_contents(doc->editor->sci, len+1), len);
     soup_session_queue_message(black_session, msg, format_callback, doc->editor);
-    //GVariant *reply;
-    //reply = g_dbus_connection_call_sync(jedi_connection,
-                             //BUS_NAME,
-                             //OBJECT_PATH,
-                             //INTERFACE_NAME,
-                             //"Format",
-                             //g_variant_new ("(si)",
-                                            //sci_get_contents(doc->editor->sci, -1),
-					    //MAX(plugin->geany_data->editor_prefs->long_line_column, plugin->geany_data->editor_prefs->line_break_column)),
-                             //NULL,
-                             //G_DBUS_CALL_FLAGS_NONE,
-                             //-1,
-			     //NULL,
-			    //NULL);
-    //if(reply == NULL){
-	//keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
-    //}
-    //else{
-	//gchar *msg;
-	//g_variant_get(reply, "(&s)", &msg);
-	//gint pos = sci_get_current_position(doc->editor->sci);
-	//sci_set_text(doc->editor->sci, msg);
-	//sci_set_current_position(doc->editor->sci, pos, TRUE);
-	//keybindings_send_command(GEANY_KEY_GROUP_FILE, GEANY_KEYS_FILE_SAVE);
-    //}
-    //g_variant_unref(reply);
     g_string_free(content_type, TRUE);
     g_free(line_length);
-    //g_free(content_type);
-    //g_free(content);
-    //g_object_unref(msg);
+
 }
 static void on_document_action(GObject *obj, GeanyDocument *doc, gpointer user_data)
 {
@@ -318,15 +291,6 @@ static gboolean demo_init(GeanyPlugin *plugin, gpointer data)
 	keybindings_set_item (group, KB_FORMAT_PYCODE, NULL,
                         0, 0, "format_pycode", _("Format Python Code"), main_menu_item);
 	black_session = soup_session_new();
-	//gchar *config_dir = g_build_path(G_DIR_SEPARATOR_S,
-		//geany_data->app->configdir, "plugins", NULL);
-	//gchar *pycoding_dbus_path = g_build_path(G_DIR_SEPARATOR_S, config_dir,
-				    //GEANY_PYDBUS_BIN, NULL);
-	//const gchar **argv = {pycoding_dbus_path,};
-
-	//dbus_running = utils_spawn_sync(config_dir, *pycoding_dbus_path, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
-        //g_free(config_dir);
-	//g_free(pycoding_dbus_path);
 	return TRUE;
 }
 
