@@ -34,23 +34,17 @@
 
 #include "geanyplugin.h"	/* plugin API, always comes first */
 
-#include <gio/gio.h>
 #include <libsoup/soup.h>
 
-#define OBJECT_PATH "/org/gtk/GDBus/GeanyPyCodingObject"
-#define BUS_NAME "org.gtk.GDBus.GeanyPyCodingServer"
-#define INTERFACE_NAME "org.gtk.GDBus.GeanyPyCodingInterface"
 #define BLACKD_URL "http://127.0.0.1:45484"
-#define JEDI_URL "http://127.0.0.1:45484/jedi"
+#define JEDI_URL "http://127.0.0.1:45484/jedi/"
 
 enum {
   KB_FORMAT_PYCODE,
   KB_COUNT
 };
-GDBusConnection *jedi_connection;
 static GtkWidget *main_menu_item = NULL;
-//gboolean dbus_running = FALSE;
-SoupSession *black_session;
+SoupSession *http_session;
 
 gboolean check_doc(GeanyDocument *doc){
     if(!DOC_VALID(doc)){
@@ -64,12 +58,12 @@ static void
 format_callback (SoupSession *session, SoupMessage *msg, gpointer user_data)
 {
     gint pos;
-    GeanyEditor *editor = user_data;
+    ScintillaObject *sci = user_data;
     switch(msg->status_code){
 	case SOUP_STATUS_OK:
-	    pos = sci_get_current_position(editor->sci);
-	    sci_set_text(editor->sci, msg->response_body->data);
-	    sci_set_current_position(editor->sci, pos, TRUE);
+	    pos = sci_get_current_position(sci);
+	    sci_set_text(sci, msg->response_body->data);
+	    sci_set_current_position(sci, pos, TRUE);
 	    keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
 	    break;
 	case SOUP_STATUS_NO_CONTENT:
@@ -103,7 +97,7 @@ static void on_document_save(GObject *obj, GeanyDocument *doc, gpointer user_dat
     soup_message_headers_append(msg->request_headers, "X-Line-Length", line_length);
     soup_message_headers_append(msg->request_headers, "X-Fast-Or-Safe", "fast");
     soup_message_set_request(msg, content_type->str, SOUP_MEMORY_STATIC, sci_get_contents(doc->editor->sci, len+1), len);
-    soup_session_queue_message(black_session, msg, format_callback, doc->editor);
+    soup_session_queue_message(http_session, msg, format_callback, doc->editor->sci);
     g_string_free(content_type, TRUE);
     g_free(line_length);
 
@@ -188,42 +182,40 @@ static void complete_python(GeanyEditor *editor, int ch, const gchar *text, Gean
     }
     msgwin_clear_tab(MSG_COMPILER);
     msgwin_clear_tab(MSG_MESSAGE);
-    jedi_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
-    if(jedi_connection == NULL){
-	msgwin_msg_add_string(COLOR_RED, -1, editor->document, "PyCoding Completion Issue. No Connection");
-	return;
+    SoupMessage *msg;
+    gchar *line_length;
+    msg = soup_message_new (SOUP_METHOD_POST, JEDI_URL);
+    line_length = g_strdup_printf("%i", geany_data->editor_prefs->autocompletion_max_entries);
+    GString *content_type = g_string_sized_new(40); 
+    g_string_append(content_type, "text/plain; charset=");
+    g_string_append(content_type, editor->document->encoding);
+    soup_message_headers_append(msg->request_headers, "X-Line-Length", line_length);
+    soup_message_headers_append(msg->request_headers, "X-File-Path", (editor->document->real_path==NULL)?editor->document->file_name:editor->document->real_path);
+    if(geany_data->app->project != NULL){
+	soup_message_headers_append(msg->request_headers, "X-Project-Path", geany_data->app->project->base_path);
     }
-    GVariant *reply;
-    reply = g_dbus_connection_call_sync (jedi_connection,
-                             BUS_NAME,
-                             OBJECT_PATH,
-                             INTERFACE_NAME,
-                             "Complete",
-                             g_variant_new ("(sisss)",
-                                            sci_get_contents_range(sci, start, pos),
-					    geany_data->editor_prefs->autocompletion_max_entries,
-                                            (editor->document->real_path==NULL)?editor->document->file_name:editor->document->real_path,
-					    (geany_data->app->project == NULL)?"":geany_data->app->project->base_path,
-					    (text==NULL)?"":text),
-                             NULL,
-                             G_DBUS_CALL_FLAGS_NONE,
-                             -1,
-                             NULL,
-                             NULL);
-    const gchar *msg;
-    g_variant_get(reply, "(&s)", &msg);
-    g_return_if_fail(msg != NULL);
-    gsize len = g_utf8_strlen(msg, -1);
-    if(text == NULL){
-	show_autocomplete(editor->sci, rootlen, msg, len);
+    if(text != NULL){
+	soup_message_headers_append(msg->request_headers, "X-Doc-Text", text);
     }
-    else{
-	if(len > 6){
-		msgwin_msg_add_string(COLOR_BLACK, line-1, editor->document, msg);
+    gchar *buffer = sci_get_contents_range(sci, start, pos);
+    gint len = g_utf8_strlen(buffer, -1);
+    soup_message_set_request(msg, content_type->str, SOUP_MEMORY_STATIC, buffer, len);
+    gint status = soup_session_send_message(http_session, msg);
+    if(status == SOUP_STATUS_OK){
+	if(text == NULL){
+	    show_autocomplete(editor->sci, rootlen, msg->response_body->data, msg->response_body->length);
+	}
+	else{
+	    if(msg->response_body->length > 6){
+		msgwin_msg_add_string(COLOR_BLACK, line-1, editor->document, msg->response_body->data);
 		msgwin_switch_tab(MSG_MESSAGE, FALSE);
+	    }
 	}
     }
-    g_variant_unref(reply);
+    g_string_free(content_type, TRUE);
+    g_free(line_length);
+    g_free(buffer);
+    g_object_unref(msg);
 }
 static gboolean on_editor_notify(GObject *object, GeanyEditor *editor,
 								 SCNotification *nt, gpointer data)
@@ -290,7 +282,7 @@ static gboolean demo_init(GeanyPlugin *plugin, gpointer data)
 	group = plugin_set_key_group (plugin, _("Format Python Code"), KB_COUNT, NULL);
 	keybindings_set_item (group, KB_FORMAT_PYCODE, NULL,
                         0, 0, "format_pycode", _("Format Python Code"), main_menu_item);
-	black_session = soup_session_new();
+	http_session = soup_session_new();
 	return TRUE;
 }
 
@@ -299,9 +291,7 @@ static gboolean demo_init(GeanyPlugin *plugin, gpointer data)
  * Be sure to leave Geany as it was before demo_init(). */
 static void demo_cleanup(GeanyPlugin *plugin, gpointer data)
 {
-    g_dbus_connection_close_sync(jedi_connection, NULL, NULL);
-    g_object_unref (jedi_connection);
-    g_object_unref(black_session);
+    g_object_unref(http_session);
     gtk_widget_destroy(main_menu_item);
 }
 
