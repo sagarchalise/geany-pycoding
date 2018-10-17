@@ -64,18 +64,16 @@ format_callback (SoupSession *session, SoupMessage *msg, gpointer user_data)
 	    pos = sci_get_current_position(sci);
 	    sci_set_text(sci, msg->response_body->data);
 	    sci_set_current_position(sci, pos, TRUE);
-	    keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
 	    break;
 	case SOUP_STATUS_NO_CONTENT:
 	    break;
 	case SOUP_STATUS_INTERNAL_SERVER_ERROR:
 	case SOUP_STATUS_BAD_REQUEST:
-	    keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
 	    break;
 	default:
-	    msgwin_compiler_add(COLOR_DARK_RED, "Formatting Issue: Is blackd running ?");
-	    msgwin_switch_tab(MSG_COMPILER, FALSE);
+	    dialogs_show_msgbox(GTK_MESSAGE_ERROR, "Server seems to be not running ?");
     }
+    keybindings_send_command(GEANY_KEY_GROUP_BUILD, GEANY_KEYS_BUILD_LINK);
 }
 
 static void on_document_save(GObject *obj, GeanyDocument *doc, gpointer user_data)
@@ -256,8 +254,8 @@ static PluginCallback demo_callbacks[] =
 	 * can prevent Geany from processing the notification. Use this with care. */
         {"document-open", (GCallback) & on_document_action, FALSE, NULL},
         {"document-activate", (GCallback) & on_document_action, FALSE, NULL},
-        //{"document-save", (GCallback) & on_document_save, FALSE, NULL},
-        {"document-before-save", (GCallback) & on_document_save, FALSE, NULL},
+        //{"document-save", (GCallback) & on_document_action, FALSE, NULL},
+        {"document-save", (GCallback) & on_document_save, FALSE, NULL},
 	{ "editor-notify", (GCallback) &on_editor_notify, FALSE, NULL },
 	{ NULL, NULL, FALSE, NULL }
 };
@@ -272,7 +270,7 @@ static void menu_item_action(G_GNUC_UNUSED GtkMenuItem *menuitem, gpointer gdata
 static gboolean demo_init(GeanyPlugin *plugin, gpointer data)
 {
     
-    GeanyData *geany_data = plugin->geany_data;
+	GeanyData *geany_data = plugin->geany_data;
         geany_plugin_set_data(plugin, plugin, NULL);
 	main_menu_item = gtk_menu_item_new_with_label(_("Format Python Code"));
 	gtk_widget_show(main_menu_item);

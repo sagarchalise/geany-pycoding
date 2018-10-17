@@ -10,20 +10,13 @@
  
 #### Requirements:
  
- * DBus Runner [bundled here](https://github.com/sagarchalise/geany-pycoding/blob/master/pycoding.py) needs to be run manually.
- * `black` and `jedi` needs to be installed as well as your favorite linter. I use `flake8`. All in `python3`
- 
+ * Server [bundled here](https://github.com/sagarchalise/geany-pycoding/blob/master/pycoding.py) needs to be run manually.
+ * `black`, `blackd` and `jedi` needs to be installed as well as your favorite linter. I use `flake8`. All in `python3`
  
  
 #### TODO
 
-* Run DBus Runner Automatically.
-* Use single communication channel i.e. **HTTP** or **DBus**
+* Run Server Automatically.
 * Give Option for formatter.
 
-#### Caveats
-
-* currently using `blackd` for formatting so uses `libsoup-2.4` for **HTTP** request. Install with `pip install black[d]`. Uses default port used by `blackd`
-* [pygobject](https://pygobject.readthedocs.io/en/latest/getting_started.html) is required.
-
-#### WARNING: VERY BUGGY 
+#### WARNING: BUGGY 
