@@ -1,10 +1,10 @@
-import os
+#! /usr/bin/env python3
 import sys
-import glob
 import logging
 
 import blackd
 from aiohttp import web
+from pathlib import Path
 
 try:
     import jedi
@@ -13,14 +13,7 @@ except ImportError:
 else:
     jedi.settings.case_insensitive_completion = False
     HAS_JEDI = True
-
-try:
-    import pipenv
-except ImportError:
-    print("No pipenv")
-    pipenv = None
-
-USER_HOME = os.path.expanduser("~")
+USER_HOME = Path.home()
 PROJ_PATH_HEADER = "X-Project-Path"
 FILE_PATH_HEADER = "X-File-Path"
 DOC_TEXT_HEADER = "X-Doc-Text"
@@ -39,9 +32,9 @@ async def handle_jedi(request):
     def get_path_for_completion(proj_name=None):
         if proj_name:
             append_project_venv(proj_name)
-        faked_gir_path = os.path.join(USER_HOME, ".cache/fakegir")
-        if os.path.isdir(faked_gir_path):
-            path = [faked_gir_path] + sys_path
+        faked_gir_path = USER_HOME.joinpath(".cache/fakegir")
+        if faked_gir_path.is_dir():
+            path = [str(faked_gir_path)] + sys_path
         else:
             print("Support for GIR may be missing")
             path = sys_path
@@ -54,21 +47,20 @@ async def handle_jedi(request):
     def append_project_venv(proj_name):
         if not proj_name:
             return
-        venv_pth = os.path.join(USER_HOME, ".virtualenvs")
-        if not os.path.isdir(venv_pth):
+        venv_pth = USER_HOME.joinpath(".virtualenvs")
+        if not venv_pth.is_dir():
             return
-        for pth in os.listdir(venv_pth):
-            entry = os.path.join(venv_pth, pth)
-            if pth.startswith(proj_name) and os.path.isdir(entry):
-                st_pk = glob.glob(os.path.join(entry, "lib/pytho*/site-packages"))
-                st_pk = st_pk.pop() if st_pk else None
-                if not (st_pk and os.path.isdir(st_pk)):
+        for pth in venv_pth.iterdir():
+            if pth.name.lower().startswith(proj_name.lower()) and pth.is_dir():
+                st_pk = pth.glob("lib/pytho*/site-packages")
+                st_pk = next(st_pk) if st_pk else None
+                if not (st_pk and st_pk.is_dir()):
                     return
-                proj_name = st_pk
+                proj_name = str(st_pk)
                 break
         else:  # nobreak
             return
-        sys_path.append(proj_name)
+        append_sys_path(proj_name)
 
     def jedi_complete(buffer, fp=None, text=None, sys_path=None, stop_len=25):
         script = jedi.Script(buffer, path=fp, sys_path=sys_path)
@@ -106,9 +98,7 @@ async def handle_jedi(request):
                 status=400, text="jedi not found, python auto-completion not possible."
             )
         cur_doc = request.headers.get(FILE_PATH_HEADER)
-        path = get_path_for_completion(
-            os.path.basename(request.headers.get(PROJ_PATH_HEADER) or "")
-        )
+        path = get_path_for_completion(Path(request.headers.get(PROJ_PATH_HEADER) or "").name)
         doc_text = request.headers.get(DOC_TEXT_HEADER)
         try:
             stop_len = int(request.headers.get(blackd.LINE_LENGTH_HEADER))
