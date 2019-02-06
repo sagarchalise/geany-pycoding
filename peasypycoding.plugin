@@ -1,0 +1,7 @@
+[Plugin]
+Module=peasypycoding
+Loader=python3
+Name=Peasy Python Coding
+Description=Python Coding helper based on peasy.
+Authors=Sagar Chalise <chalisesagarATgmailDOTcom>
+X-Peasy-API=228
