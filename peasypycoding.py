@@ -1,3 +1,4 @@
+import sys
 import site
 import ctypes
 import asyncio
@@ -137,7 +138,7 @@ if HAS_JEDI:
 
 
 NAME = "PyCoding"
-DIR_LABEL = "Choose Directory"
+DIR_LABEL = "Choose Python Path"
 
 
 async def run_async_geany_clear_cmd(tab_type):
@@ -172,14 +173,96 @@ async def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
         scintilla.set_current_position(pos, True)
 
 
+async def run_project_create(proj_name, proj_path, python_pth=None):
+    proj_path = Path(proj_path).joinpath(proj_name)
+    status = "{0} in python project creation: {1}".format("{0}", str(proj_path))
+    try:
+
+        virtualenv_home = Path.home().joinpath(".virtualenvs")
+        if not virtualenv_home.is_dir():
+            virtualenv_home.mkdir()
+        if not proj_path.is_dir():
+            proj_path.mkdir()
+        virtualenv_home = virtualenv_home.joinpath(proj_name)
+        if not virtualenv_home.exists():
+            import virtualenv
+
+            sys.argv = ["virtualenv", "--python={0}".format(python_pth), str(virtualenv_home)]
+            virtualenv.main()
+        project_pth = virtualenv_home.joinpath(".project")
+        if not project_pth.is_file():
+            with open(str(project_pth), "w") as of:
+                of.write(str(proj_path))
+        st_pk = virtualenv_home.glob("lib/pytho*/site-packages")
+        st_pk = next(st_pk) if st_pk else None
+        if st_pk and st_pk.is_dir():
+            st_pk = st_pk.joinpath("{0}.pth".format(proj_name))
+            if not st_pk.is_file():
+                with open(str(st_pk), "w") as of:
+                    of.write(str(proj_path))
+        status = status.format("Success")
+    except Exception:
+        status = status.format("Error")
+    Geany.msgwin_status_add_string(status)
+
+
+def show_folder_choose_dlg(parent, filename_func, filename=None):
+    dialog = Gtk.FileChooserDialog(
+        DIR_LABEL,
+        parent,
+        Gtk.FileChooserAction.OPEN,
+        (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, _("Select"), Gtk.ResponseType.OK),
+    )
+    dialog.set_select_multiple(False)
+    dialog.set_show_hidden(False)
+    if filename:
+        dialog.set_filename(filename)
+    dialog.set_default_size(800, 400)
+    response = dialog.run()
+    if response == Gtk.ResponseType.OK:
+        filename_func(dialog.get_filename())
+    dialog.destroy()
+
+
+class PythonPorjectDialog(Gtk.Dialog):
+    def __init__(self, parent):
+        Gtk.Dialog.__init__(
+            self,
+            _("Create Python Project"),
+            parent,
+            Gtk.DialogFlags.DESTROY_WITH_PARENT,
+            (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK),
+        )
+
+        self.set_default_size(400, 200)
+        box = self.get_content_area()
+        button = Gtk.CheckButton(_("Is python project ?:"))
+        button.set_active(True)
+        box.add(button)
+        dir_label = Gtk.Label(_("Python Path:"))
+        dir_label.set_alignment(0, 0.5)
+        dir_choice = Gtk.Button(DIR_LABEL)
+        dir_choice.connect("clicked", self.on_folder_clicked)
+        box.add(dir_label)
+        box.add(dir_choice)
+        self.show_all()
+
+    def on_folder_clicked(self, widget):
+        filename = widget.get_label()
+        pth = Path(filename)
+        if not pth.is_file():
+            filename = DIR_LABEL
+        show_folder_choose_dlg(self, widget.set_label, widget.get_label())
+
+
 class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     __gtype_name__ = NAME
     pycoding_config = None
     completion_words = None
     format_signal = None
     lint_signals = None
+    pyproj_signal = None
     format_item = None
-    pyproj_item = None
     DEFAULT_LINE_WIDTH = 79
     default_pth_dir = None
 
@@ -257,12 +340,64 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             for s in signals:
                 self.lint_signals.append((geany_obj.connect(s, self.on_document_lint)))
         else:
+            if not self.lint_signals:
+                return
             for signl in self.lint_signals:
                 geany_obj.disconnect(signl)
             self.lint_signals = None
 
-    def on_pyproj_item_click(self, item=None):
-        pass
+    def set_pyproj_signal_handler(self, geany_obj=None):
+        if not geany_obj:
+            geany_obj = self.geany_plugin.geany_data.object
+        if self.enable_venv_project:
+            if self.pyproj_signal:
+                return
+            self.pyproj_signal = geany_obj.connect("project-open", self.on_pyproj_response)
+        else:
+            if self.pyproj_signal:
+                geany_obj.disconnect(self.pyproj_signal)
+
+    def on_pyproj_response(self, obj, proj_cnf_file):
+        is_pyproj = False
+        python_pth = "/usr/bin/python"
+        if proj_cnf_file.has_group(NAME.lower()):
+            try:
+                pth = Path(proj_cnf_file.get_string(NAME.lower(), "python_path"))
+                is_pyproj = proj_cnf_file.get_boolean(NAME.lower(), "is_pyproj")
+            except (GLib.Error, TypeError):
+                pass
+            else:
+                if pth.is_file():
+                    python_pth = str(pth)
+        else:
+            dlg = PythonPorjectDialog(self.geany_plugin.geany_data.main_widgets.window)
+            ok = dlg.run()
+            if ok not in (Gtk.ResponseType.APPLY, Gtk.ResponseType.OK):
+                dlg.destroy()
+                return
+            for child in dlg.get_content_area():
+                is_chkbtn = isinstance(child, Gtk.CheckButton)
+                is_btn = isinstance(child, Gtk.Button)
+                if not isinstance(child, (Gtk.CheckButton, Gtk.Button)):
+                    continue
+                if is_chkbtn:
+                    is_pyproj = child.get_active()
+                elif is_btn:
+                    try:
+                        pth = Path(child.get_label())
+                    except TypeError:
+                        pass
+                    else:
+                        if pth.is_file():
+                            python_pth = str(pth)
+            dlg.destroy()
+        if is_pyproj:
+            proj_name = self.geany_plugin.geany_data.app.project.name
+            base_path = self.geany_plugin.geany_data.app.project.base_path
+            asyncio.run(run_project_create(proj_name, base_path, python_pth))
+        proj_cnf_file.set_boolean(NAME.lower(), "is_pyproj", is_pyproj)
+        proj_cnf_file.set_string(NAME.lower(), "python_path", str(base_path))
+        # Geany.project_write_config()
 
     def do_enable(self):
         geany_data = self.geany_plugin.geany_data
@@ -292,15 +427,8 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 setattr(self, cnf, self.keyfile.get_boolean(NAME.lower(), cnf[0]))
             except GLib.Error:
                 setattr(self, cnf, True)
-            else:
-                self.default_pth_dir = self.keyfile.get(NAME.lower(), "include_dir")
         if self.enable_venv_project:
-            ipp = ENABLE_CONFIGS.get("enable_venv_project")[0]
-            self.pyproj_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, ipp)
-            self.pyproj_item.connect("activate", self.on_pyproj_item_click)
-            keys.add_keybinding("init_python_project", ipp, self.pyproj_item, 0, 0)
-            geany_data.main_widgets.tools_menu.append(self.pyproj_item)
-            self.pyproj_item.show_all()
+            self.set_pyproj_signal_handler(o)
         self.set_lint_signal_handler(o)
         self.set_format_signal_handler(o)
         return True
@@ -314,14 +442,12 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.set_lint_signal_handler(o)
         self.enable_autoformat = False
         self.set_format_signal_handler(o)
+        self.enable_venv_project = False
+        self.set_pyproj_signal_handler(o)
         if self.format_item:
             geany_data.main_widgets.tools_menu.remove(self.format_item)
             self.format_item.destroy()
             self.format_item = None
-        if self.pyproj_item:
-            geany_data.main_widgets.tools_menu.remove(self.pyproj_item)
-            self.pyproj_item.destroy()
-            self.pyproj_item = None
 
     @staticmethod
     def scintilla_command(sci, sci_msg, sci_cmd, lparam, data):
@@ -448,17 +574,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if self.pycoding_config.is_file():
             self.keyfile.load_from_file(conf_file, GLib.KeyFileFlags.KEEP_COMMENTS)
         for child in user_data.get_children():
-            is_chkbtn = isinstance(child, Gtk.CheckButton)
-            is_fcbtn = isinstance(child, Gtk.FileChooserButton)
-            if not (is_chkbtn or is_fcbtn):
+            if not isinstance(child, Gtk.CheckButton):
                 continue
-            if is_chkbtn:
-                val = child.get_active()
-                name = child.get_name()
-                setattr(self, name, val)
-            else:
-                name = "include_dir"
-                val = child.get_filename()
+            val = child.get_active()
+            name = child.get_name()
+            setattr(self, name, val)
             self.keyfile.set_boolean(NAME.lower(), name, val)
         self.keyfile.save_to_file(conf_file)
         obj = self.geany_plugin.geany_data.object
@@ -481,18 +601,6 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             button.set_name(name)
             button.set_active(val)
             vbox.add(button)
-        label = Gtk.Label(_("Extra Folder to include:"))
-        label.set_alignment(0, 0.5)
-        file_chooser = Gtk.FileChooserButton(DIR_LABEL, Gtk.FileChooserAction.SELECT_FOLDER)
-        try:
-            is_dir = self.default_pth_dir.is_dir()
-        except AttributeError:
-            pass
-        else:
-            if is_dir:
-                file_chooser.set_current_name(str(self.default_pth_dir))
-        vbox.add(label)
-        vbox.add(file_chooser)
         align.add(vbox)
         dialog.connect("response", self.on_configure_response, vbox)
         return align
