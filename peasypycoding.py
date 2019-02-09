@@ -1,9 +1,9 @@
 import sys
 import site
 import ctypes
-import asyncio
 import importlib
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from gi.repository import Gtk
 from gi.repository import GLib
@@ -94,7 +94,11 @@ if HAS_JEDI:
         script = jedi.Script(content, path=fp, sys_path=sys_path)
         data = ""
         doc = None
-        for count, complete in enumerate(script.completions()):
+        try:
+            completions = script.completions()
+        except AttributeError:
+            return data
+        for count, complete in enumerate(completions):
             name = complete.name
             if name.startswith("__") and name.endswith("__"):
                 continue
@@ -120,36 +124,28 @@ if HAS_JEDI:
 
     def append_project_venv(proj_name):
         if not proj_name:
-            return
+            return sys.path
         venv_pth = Path.home().joinpath(".virtualenvs")
         if not venv_pth.is_dir():
-            return
+            return sys.path
         for pth in venv_pth.iterdir():
-            if pth.name.lower().startswith(proj_name.lower()) and pth.is_dir():
-                st_pk = pth.glob("lib/pytho*/site-packages")
+            if pth.name.startswith(proj_name.lower()) and pth.is_dir():
+                st_pk = pth.glob("lib/python*/site-packages")
                 st_pk = next(st_pk) if st_pk else None
-                if not (st_pk and st_pk.is_dir()):
-                    return
-                proj_name = str(st_pk)
-                break
+                if st_pk and st_pk.is_dir():
+                    proj_name = str(st_pk)
+                    break
         else:  # nobreak
-            return
+            return sys.path
         site.addsitedir(proj_name)
+        return sys.path
 
 
-NAME = "PyCoding"
+NAME = "pycoding"
 DIR_LABEL = "Choose Python Path"
 
 
-async def run_async_geany_clear_cmd(tab_type):
-    Geany.msgwin_clear_tab(tab_type)
-
-
-async def run_async_geany_key_cmd(key_group, key_id):
-    Geany.keybindings_send_command(key_group, key_id)
-
-
-async def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
+def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
     if style_paths is None:
         style_paths = []
     contents = scintilla.get_contents(-1)
@@ -167,65 +163,85 @@ async def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
     else:
         style = {"line_width": line_width}
     format_text, formatted = code_formatter(contents, style_config=style)
-    if formatted:
-        pos = scintilla.get_current_position()
-        scintilla.set_text(format_text)
-        scintilla.set_current_position(pos, True)
+    if not formatted:
+        return
+    pos = scintilla.get_current_position()
+    scintilla.set_text(format_text)
+    scintilla.set_current_position(pos, True)
 
 
-async def run_project_create(proj_name, proj_path, python_pth=None):
-    proj_path = Path(proj_path).joinpath(proj_name)
-    status = "{0} in python project creation: {1}".format("{0}", str(proj_path))
+PYTHON_PTH_LBL = "python_path"
+PYCODING_CNF = ("is_pyproj", "create_template", "mkvenv", PYTHON_PTH_LBL)
+PYTHON_PTH_INDEX = PYCODING_CNF.index(PYTHON_PTH_LBL)
+
+
+def create_venv(proj_path, proj_name, python_pth):
+    virtualenv_home = Path.home().joinpath(".virtualenvs")
+    if not virtualenv_home.is_dir():
+        virtualenv_home.mkdir()
+    virtualenv_home = virtualenv_home.joinpath(proj_name)
+    status = "{0} in python venv creation for project: {1}".format("{0}", proj_name)
     try:
-
         virtualenv_home = Path.home().joinpath(".virtualenvs")
         if not virtualenv_home.is_dir():
             virtualenv_home.mkdir()
-        if not proj_path.is_dir():
-            proj_path.mkdir()
         virtualenv_home = virtualenv_home.joinpath(proj_name)
         if not virtualenv_home.exists():
             import virtualenv
 
             sys.argv = ["virtualenv", "--python={0}".format(python_pth), str(virtualenv_home)]
             virtualenv.main()
-        project_pth = virtualenv_home.joinpath(".project")
-        if not project_pth.is_file():
-            with open(str(project_pth), "w") as of:
-                of.write(str(proj_path))
-        st_pk = virtualenv_home.glob("lib/pytho*/site-packages")
+        try:
+            import virtualenvwrapper
+        except ImportError:
+            pass
+        else:
+            project_pth = virtualenv_home.joinpath(".project")
+            if not project_pth.is_file():
+                with open(str(project_pth), "w") as of:
+                    of.write(str(proj_path))
+        st_pk = virtualenv_home.glob("lib/python*/site-packages")
         st_pk = next(st_pk) if st_pk else None
         if st_pk and st_pk.is_dir():
             st_pk = st_pk.joinpath("{0}.pth".format(proj_name))
             if not st_pk.is_file():
                 with open(str(st_pk), "w") as of:
                     of.write(str(proj_path))
-        status = status.format("Success")
     except Exception:
         status = status.format("Error")
+    else:
+        status = status.format("Success")
     Geany.msgwin_status_add_string(status)
 
 
-def show_folder_choose_dlg(parent, filename_func, filename=None):
-    dialog = Gtk.FileChooserDialog(
-        DIR_LABEL,
-        parent,
-        Gtk.FileChooserAction.OPEN,
-        (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, _("Select"), Gtk.ResponseType.OK),
-    )
-    dialog.set_select_multiple(False)
-    dialog.set_show_hidden(False)
-    if filename:
-        dialog.set_filename(filename)
-    dialog.set_default_size(800, 400)
-    response = dialog.run()
-    if response == Gtk.ResponseType.OK:
-        filename_func(dialog.get_filename())
-    dialog.destroy()
+def create_proj_template(proj_path):
+    status = "{0} in python template creation for project: {1}".format("{0}", proj_path.name)
+    try:
+        if not proj_path.is_dir():
+            proj_path.mkdir()
+    except Exception:
+        status = status.format("Error")
+    else:
+        status = status.format("Success")
+    Geany.msgwin_status_add_string(status)
+
+
+def run_project_create(proj_name, proj_path, python_cnf=None):
+    if not python_cnf:
+        return
+    if not python_cnf.get(PYCODING_CNF[0]):
+        return
+    proj_path = Path(proj_path)
+    executor = ThreadPoolExecutor(max_workers=2)
+    with executor:
+        if python_cnf.get("mkvenv"):
+            executor.submit(create_venv, proj_path, proj_name, python_cnf.get(PYTHON_PTH_LBL))
+        if python_cnf.get("create_template"):
+            executor.submit(create_proj_template, proj_path.joinpath(proj_name))
 
 
 class PythonPorjectDialog(Gtk.Dialog):
-    def __init__(self, parent):
+    def __init__(self, parent, label_to_show=DIR_LABEL):
         Gtk.Dialog.__init__(
             self,
             _("Create Python Project"),
@@ -236,15 +252,28 @@ class PythonPorjectDialog(Gtk.Dialog):
 
         self.set_default_size(400, 200)
         box = self.get_content_area()
-        button = Gtk.CheckButton(_("Is python project ?:"))
-        button.set_active(True)
-        box.add(button)
-        dir_label = Gtk.Label(_("Python Path:"))
-        dir_label.set_alignment(0, 0.5)
-        dir_choice = Gtk.Button(DIR_LABEL)
-        dir_choice.connect("clicked", self.on_folder_clicked)
-        box.add(dir_label)
-        box.add(dir_choice)
+        for index, name in enumerate(PYCODING_CNF):
+            if index == PYTHON_PTH_INDEX:
+                dir_label = Gtk.Label(_("Virtual Environment Source Python Path:"))
+                dir_label.set_alignment(0, 0.5)
+                button = Gtk.Button(label_to_show)
+                button.connect("clicked", self.on_folder_clicked)
+                button.set_name(name)
+                box.add(dir_label)
+                box.add(button)
+            else:
+                button = Gtk.CheckButton(
+                    _(
+                        "Is python project ?"
+                        if name == "is_pyproj"
+                        else "Make Virtual Environment ?"
+                        if name == "mkvenv"
+                        else "Make Template ?"
+                    )
+                )
+                button.set_active(True)
+                button.set_name(name)
+                box.add(button)
         self.show_all()
 
     def on_folder_clicked(self, widget):
@@ -252,11 +281,25 @@ class PythonPorjectDialog(Gtk.Dialog):
         pth = Path(filename)
         if not pth.is_file():
             filename = DIR_LABEL
-        show_folder_choose_dlg(self, widget.set_label, widget.get_label())
+        dialog = Gtk.FileChooserDialog(
+            DIR_LABEL,
+            self,
+            Gtk.FileChooserAction.OPEN,
+            (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, _("Select"), Gtk.ResponseType.OK),
+        )
+        dialog.set_select_multiple(False)
+        dialog.set_show_hidden(False)
+        if filename:
+            dialog.set_filename(filename)
+        dialog.set_default_size(600, 300)
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            widget.set_label(dialog.get_filename())
+        dialog.destroy()
 
 
 class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
-    __gtype_name__ = NAME
+    __gtype_name__ = NAME.title()
     pycoding_config = None
     completion_words = None
     format_signal = None
@@ -275,8 +318,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             self.format_item.set_sensitive(val)
 
     def on_document_close(self, user_data, doc):
-        asyncio.run(run_async_geany_clear_cmd(Geany.MessageWindowTabNum.COMPILER))
-        # asyncio.run(run_async_geany_clear_cmd(Geany.MessageWindowTabNum.MESSAGE))
+        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
         self.set_menuitem_sensitivity(False)
 
     def check_and_lint(self, doc, check=True):
@@ -284,7 +326,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if check and not self.is_doc_python(doc):
             return False
 
-        asyncio.run(run_async_geany_key_cmd(Geany.KeyGroupID.BUILD, Geany.KeyBindingID.BUILD_LINK))
+        Geany.keybindings_send_command(Geany.KeyGroupID.BUILD, Geany.KeyBindingID.BUILD_LINK)
         if check:
             return True
         return False
@@ -304,12 +346,20 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         project = self.geany_plugin.geany_data.app.project
         if project:
             style_paths.append(project.base_path)
-        asyncio.run(
-            run_formatter(
-                DEFAULT_FORMATTER, sci, style_paths=style_paths, line_width=self.DEFAULT_LINE_WIDTH
+        executor = ThreadPoolExecutor(max_workers=2)
+
+        def on_formatter_finished(done):
+            self.check_and_lint(doc, check=False)
+
+        with executor:
+            formatter = executor.submit(
+                run_formatter,
+                DEFAULT_FORMATTER,
+                sci,
+                style_paths=style_paths,
+                line_width=self.DEFAULT_LINE_WIDTH,
             )
-        )
-        self.check_and_lint(doc, check=False)
+            formatter.add_done_callback(on_formatter_finished)
         return True
 
     def on_document_notify(self, user_data, doc):
@@ -352,59 +402,70 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if self.enable_venv_project:
             if self.pyproj_signal:
                 return
-            self.pyproj_signal = geany_obj.connect("project-open", self.on_pyproj_response)
+            self.pyproj_signal = geany_obj.connect("project-save", self.on_pyproj_response)
         else:
             if self.pyproj_signal:
                 geany_obj.disconnect(self.pyproj_signal)
 
     def on_pyproj_response(self, obj, proj_cnf_file):
-        is_pyproj = False
-        python_pth = "/usr/bin/python"
-        if proj_cnf_file.has_group(NAME.lower()):
+        settings = dict(zip(PYCODING_CNF, [False, False, False, "/usr/bin/python3"]))
+        for name in PYCODING_CNF:
             try:
-                pth = Path(proj_cnf_file.get_string(NAME.lower(), "python_path"))
-                is_pyproj = proj_cnf_file.get_boolean(NAME.lower(), "is_pyproj")
+                if name == PYTHON_PTH_LBL:
+                    pth = Path(proj_cnf_file.get_string(NAME, name))
+                    if pth.is_file():
+                        settings[name] = str(pth)
+                else:
+                    settings[name] = proj_cnf_file.get_boolean(NAME, name)
             except (GLib.Error, TypeError):
                 pass
             else:
-                if pth.is_file():
-                    python_pth = str(pth)
-        else:
-            dlg = PythonPorjectDialog(self.geany_plugin.geany_data.main_widgets.window)
+                break
+        else:  # nobreak
+            dlg = PythonPorjectDialog(
+                self.geany_plugin.geany_data.main_widgets.window,
+                label_to_show=settings[PYTHON_PTH_LBL],
+            )
             ok = dlg.run()
-            if ok not in (Gtk.ResponseType.APPLY, Gtk.ResponseType.OK):
-                dlg.destroy()
-                return
-            for child in dlg.get_content_area():
-                is_chkbtn = isinstance(child, Gtk.CheckButton)
-                is_btn = isinstance(child, Gtk.Button)
-                if not isinstance(child, (Gtk.CheckButton, Gtk.Button)):
-                    continue
-                if is_chkbtn:
-                    is_pyproj = child.get_active()
-                elif is_btn:
-                    try:
-                        pth = Path(child.get_label())
-                    except TypeError:
-                        pass
-                    else:
-                        if pth.is_file():
-                            python_pth = str(pth)
+            if ok in (Gtk.ResponseType.APPLY, Gtk.ResponseType.OK):
+                for child in dlg.get_content_area():
+                    is_chkbtn = isinstance(child, Gtk.CheckButton)
+                    is_btn = isinstance(child, Gtk.Button)
+                    if not isinstance(child, (Gtk.CheckButton, Gtk.Button)):
+                        continue
+                    if is_chkbtn:
+                        settings[child.get_name()] = child.get_active()
+                    elif is_btn:
+                        try:
+                            pth = Path(child.get_label())
+                        except TypeError:
+                            pass
+                        else:
+                            if pth.is_file():
+                                settings[child.get_name()] = str(pth)
             dlg.destroy()
-        if is_pyproj:
-            proj_name = self.geany_plugin.geany_data.app.project.name
-            base_path = self.geany_plugin.geany_data.app.project.base_path
-            asyncio.run(run_project_create(proj_name, base_path, python_pth))
-        proj_cnf_file.set_boolean(NAME.lower(), "is_pyproj", is_pyproj)
-        proj_cnf_file.set_string(NAME.lower(), "python_path", str(base_path))
-        # Geany.project_write_config()
+        for name, value in settings.items():
+            if name == PYTHON_PTH_LBL:
+                proj_cnf_file.set_string(NAME, name, str(value))
+            else:
+                proj_cnf_file.set_boolean(NAME, name, value)
+        try:
+            pattern_list = proj_cnf_file.get_string_list("project", "file_patterns")
+        except GLib.GError:
+            pattern_list = []
+        proj_name = self.geany_plugin.geany_data.app.project.name
+        base_path = self.geany_plugin.geany_data.app.project.base_path
+        run_project_create(proj_name, base_path, settings)
+        if settings.get(PYCODING_CNF[0]) and "*.py" not in pattern_list:
+            pattern_list.append("*.py")
+            proj_cnf_file.set_string_list("project", "file_patterns", pattern_list)
 
     def do_enable(self):
         geany_data = self.geany_plugin.geany_data
         self.pycoding_config = Path(geany_data.app.configdir).joinpath(
-            "plugins", "{0}.conf".format(NAME.lower())
+            "plugins", "{0}.conf".format(NAME)
         )
-        keys = self.add_key_group(NAME.lower(), 1 + int(bool(DEFAULT_FORMATTER)))
+        keys = self.add_key_group(NAME, 1 + int(bool(DEFAULT_FORMATTER)))
         if DEFAULT_FORMATTER:
             self.DEFAULT_LINE_WIDTH = max(
                 geany_data.editor_prefs.long_line_column, geany_data.editor_prefs.line_break_column
@@ -424,7 +485,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             self.keyfile.load_from_file(str(self.pycoding_config), GLib.KeyFileFlags.KEEP_COMMENTS)
         for cnf in ENABLE_CONFIGS:
             try:
-                setattr(self, cnf, self.keyfile.get_boolean(NAME.lower(), cnf[0]))
+                setattr(self, cnf, self.keyfile.get_boolean(NAME, cnf[0]))
             except GLib.Error:
                 setattr(self, cnf, True)
         if self.enable_venv_project:
@@ -479,16 +540,6 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             self.complete_python(editor, nt.ch, getattr(nt, "text", None))
         return False
 
-    def append_site_paths(self, proj_name=None):
-        append_project_venv(proj_name)
-        if self.default_pth_dir:
-            def_pth = Path(self.default_pth_dir)
-            if not def_pth.is_dir():
-                return
-            # run for smthing
-            # check pth file
-            site.addsitedir(str(def_pth))
-
     def complete_python(self, editor, char, text=None):
         char = chr(char)
         code_check = (
@@ -541,9 +592,9 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         cur_doc = editor.document
         fp = cur_doc.real_path or cur_doc.file_name
         proj = self.geany_plugin.geany_data.app.project
-        self.append_site_paths(proj.name if proj else None)
+        path = append_project_venv(proj.name if proj else None)
         try:
-            data = jedi_complete(doc_content, fp=fp, text=text)
+            data = jedi_complete(doc_content, fp=fp, text=text, sys_path=path)
         except ValueError as e:
             print(e)
             return
@@ -579,7 +630,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             val = child.get_active()
             name = child.get_name()
             setattr(self, name, val)
-            self.keyfile.set_boolean(NAME.lower(), name, val)
+            self.keyfile.set_boolean(NAME, name, val)
         self.keyfile.save_to_file(conf_file)
         obj = self.geany_plugin.geany_data.object
         self.set_lint_signal_handler(obj)
