@@ -1,6 +1,7 @@
 import sys
 import site
 import ctypes
+import shutil
 import importlib
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -62,20 +63,19 @@ if DEFAULT_FORMATTER:
 
             def FormatCode(content, style_config=None):
                 try:
-                    changed_content = black.format_file_contents(
-                        content, line_length=style_config["line_width"], fast=False
-                    )
+                    mode = black.FileMode(line_length=style_config["line_width"])
+                    changed_content = black.format_file_contents(content, fast=True, mode=mode)
                 except black.NothingChanged:
                     return "", False
                 else:
                     return changed_content, True
 
-            return FormatCode, GetDefaultStyleForDir
+            return FormatCode, GetDefaultStyleForDir, black.InvalidInput
         elif name == "yapf":
             from yapf.yapflib.yapf_api import FormatCode  # reformat a string of code
             from yapf.yapflib.file_resources import GetDefaultStyleForDir
 
-            return FormatCode, GetDefaultStyleForDir
+            return FormatCode, GetDefaultStyleForDir, None
         elif name == "autopep8":
             from autopep8 import fix_code
 
@@ -84,7 +84,7 @@ if DEFAULT_FORMATTER:
             def FormatCode(content, style=None):
                 return fix_code(content, options={"max_line_length": style["line_width"]})
 
-            return FormatCode, GetDefaultStyleForDir
+            return FormatCode, GetDefaultStyleForDir, None
         return None, None
 
 
@@ -105,7 +105,7 @@ if HAS_JEDI:
             if text is not None:
                 if text != name:
                     continue
-                if not (complete.is_keyword or complete.type == "module"):
+                if not (complete.is_keyword or (complete.type and complete.type == "module")):
                     doc = complete.docstring()
                     return doc or ""
                 break
@@ -150,8 +150,8 @@ def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
         style_paths = []
     contents = scintilla.get_contents(-1)
     if not contents:
-        return
-    code_formatter, default_style_dir = get_formatter(DEFAULT_FORMATTER)
+        return False
+    code_formatter, default_style_dir, exceptions = get_formatter(DEFAULT_FORMATTER)
     if default_style_dir is not None:
         for path in style_paths:
             style = default_style_dir(path)
@@ -162,12 +162,19 @@ def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
         style["COLUMN_LIMIT"] = line_width
     else:
         style = {"line_width": line_width}
-    format_text, formatted = code_formatter(contents, style_config=style)
-    if not formatted:
-        return
-    pos = scintilla.get_current_position()
-    scintilla.set_text(format_text)
-    scintilla.set_current_position(pos, True)
+    if exceptions:
+        try:
+            format_text, formatted = code_formatter(contents, style_config=style)
+        except exceptions as error:
+            formatted = None
+            Geany.msgwin_compiler_add_string(Geany.MsgColors.RED, str(error))
+    else:
+        format_text, formatted = code_formatter(contents, style_config=style)
+    if formatted:
+        pos = scintilla.get_current_position()
+        scintilla.set_text(format_text)
+        scintilla.set_current_position(pos, True)
+    return formatted if formatted is not None else True
 
 
 PYTHON_PTH_LBL = "python_path"
@@ -181,6 +188,13 @@ def create_venv(proj_path, proj_name, python_pth):
         virtualenv_home.mkdir()
     virtualenv_home = virtualenv_home.joinpath(proj_name)
     status = "{0} in python venv creation for project: {1}".format("{0}", proj_name)
+
+    def write_proj_path(filename):
+        if filename.is_file():
+            return
+        with open(str(filename), "w") as of:
+            of.write(str(proj_path))
+
     try:
         virtualenv_home = Path.home().joinpath(".virtualenvs")
         if not virtualenv_home.is_dir():
@@ -191,6 +205,11 @@ def create_venv(proj_path, proj_name, python_pth):
 
             sys.argv = ["virtualenv", "--python={0}".format(python_pth), str(virtualenv_home)]
             virtualenv.main()
+        st_pk = virtualenv_home.glob("lib/python*/site-packages")
+        st_pk = next(st_pk) if st_pk else None
+        if st_pk and st_pk.is_dir():
+            st_pk = st_pk.joinpath("{0}.pth".format(proj_name))
+            write_proj_path(st_pk)
         try:
             import virtualenvwrapper
         except ImportError:
@@ -198,15 +217,10 @@ def create_venv(proj_path, proj_name, python_pth):
         else:
             project_pth = virtualenv_home.joinpath(".project")
             if not project_pth.is_file():
-                with open(str(project_pth), "w") as of:
-                    of.write(str(proj_path))
-        st_pk = virtualenv_home.glob("lib/python*/site-packages")
-        st_pk = next(st_pk) if st_pk else None
-        if st_pk and st_pk.is_dir():
-            st_pk = st_pk.joinpath("{0}.pth".format(proj_name))
-            if not st_pk.is_file():
-                with open(str(st_pk), "w") as of:
-                    of.write(str(proj_path))
+                if st_pk.is_file():
+                    shutil.copy2(str(st_pk), str(project_pth))
+                else:
+                    write_proj_path(project_pth)
     except Exception:
         status = status.format("Error")
     else:
@@ -227,9 +241,7 @@ def create_proj_template(proj_path):
 
 
 def run_project_create(proj_name, proj_path, python_cnf=None):
-    if not python_cnf:
-        return
-    if not python_cnf.get(PYCODING_CNF[0]):
+    if not (python_cnf and python_cnf.get(PYCODING_CNF[0])):
         return
     proj_path = Path(proj_path)
     executor = ThreadPoolExecutor(max_workers=2)
@@ -325,18 +337,15 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.on_document_close(None, doc)
         if check and not self.is_doc_python(doc):
             return False
-
         Geany.keybindings_send_command(Geany.KeyGroupID.BUILD, Geany.KeyBindingID.BUILD_LINK)
-        if check:
-            return True
-        return False
+        return True if check else False
 
     def on_format_item_click(self, item=None):
         cur_doc = Geany.Document.get_current()
         self.format_code(cur_doc)
 
     def format_code(self, doc):
-        if not (DEFAULT_FORMATTER or self.is_doc_python(doc)):
+        if not (DEFAULT_FORMATTER and self.is_doc_python(doc)):
             return False
         sci = doc.editor.sci
         contents = sci.get_contents(-1)
@@ -346,20 +355,16 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         project = self.geany_plugin.geany_data.app.project
         if project:
             style_paths.append(project.base_path)
+        self.on_document_close(None, doc)
         executor = ThreadPoolExecutor(max_workers=2)
-
-        def on_formatter_finished(done):
-            self.check_and_lint(doc, check=False)
-
         with executor:
-            formatter = executor.submit(
+            executor.submit(
                 run_formatter,
                 DEFAULT_FORMATTER,
                 sci,
                 style_paths=style_paths,
                 line_width=self.DEFAULT_LINE_WIDTH,
             )
-            formatter.add_done_callback(on_formatter_finished)
         return True
 
     def on_document_notify(self, user_data, doc):
@@ -374,7 +379,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if self.enable_autoformat:
             if self.format_signal:
                 return
-            self.format_signal = geany_obj.connect("document-save", self.on_document_notify)
+            self.format_signal = geany_obj.connect("document-before-save", self.on_document_notify)
         else:
             if self.format_signal:
                 geany_obj.disconnect(self.format_signal)
@@ -528,7 +533,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
 
     def on_editor_notify(self, g_obj, editor, nt):
         cur_doc = editor.document or Geany.Document.get_current()
-        if not (HAS_JEDI or self.is_doc_python(cur_doc)):
+        if not (HAS_JEDI and self.is_doc_python(cur_doc)):
             return False
         sci = editor.sci
         pos = sci.get_current_position()
