@@ -351,7 +351,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         contents = sci.get_contents(-1)
         if not contents:
             return False
-        style_paths = [str(Path(doc.real_path).parent)]
+        try:
+            style_paths = [str(Path(doc.real_path).parent)]
+        except Exception:
+            style_paths = []
         project = self.geany_plugin.geany_data.app.project
         if project:
             style_paths.append(project.base_path)
@@ -387,7 +390,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     def set_lint_signal_handler(self, geany_obj=None):
         if not geany_obj:
             geany_obj = self.geany_plugin.geany_data.object
-        signals = ("document-activate", "document-open")
+        signals = ("document-activate", "document-open", "document-save")
         if self.enable_autolint:
             if self.lint_signals:
                 return
