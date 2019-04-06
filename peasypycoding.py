@@ -426,10 +426,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 else:
                     settings[name] = proj_cnf_file.get_boolean(NAME, name)
             except (GLib.Error, TypeError):
-                pass
-            else:
+                show_dlg = True
                 break
         else:  # nobreak
+            show_dlg = False
+        if show_dlg:
             dlg = PythonPorjectDialog(
                 self.geany_plugin.geany_data.main_widgets.window,
                 label_to_show=settings[PYTHON_PTH_LBL],
