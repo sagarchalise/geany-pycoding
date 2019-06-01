@@ -226,7 +226,7 @@ def create_venv(proj_path, proj_name, python_pth):
         status = status.format("Error")
     else:
         status = status.format("Success")
-    Geany.msgwin_status_add_string(status)
+    return status
 
 
 def create_proj_template(proj_path):
@@ -238,6 +238,11 @@ def create_proj_template(proj_path):
         status = status.format("Error")
     else:
         status = status.format("Success")
+    return status
+
+
+def on_project_done(future):
+    status = future.result()
     Geany.msgwin_status_add_string(status)
 
 
@@ -247,9 +252,11 @@ def run_project_create(proj_name, proj_path, python_cnf=None):
     proj_path = Path(proj_path)
     executor = ThreadPoolExecutor(max_workers=2)
     if python_cnf.get("mkvenv"):
-        executor.submit(create_venv, proj_path, proj_name, python_cnf.get(PYTHON_PTH_LBL))
+        future = executor.submit(create_venv, proj_path, proj_name, python_cnf.get(PYTHON_PTH_LBL))
+        future.add_done_callback(on_project_done)
     if python_cnf.get("create_template"):
-        executor.submit(create_proj_template, proj_path.joinpath(proj_name))
+        future = executor.submit(create_proj_template, proj_path.joinpath(proj_name))
+        future.add_done_callback(on_project_done)
 
 
 class PythonPorjectDialog(Gtk.Dialog):
