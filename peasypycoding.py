@@ -162,10 +162,11 @@ def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
         style["COLUMN_LIMIT"] = line_width
     else:
         style = {"line_width": line_width}
+    error = None
     if exceptions:
         try:
             format_text, formatted = code_formatter(contents, style_config=style)
-        except exceptions as error:
+        except exceptions as exc:
             formatted = None
             Geany.msgwin_compiler_add_string(Geany.MsgColors.RED, str(error))
     else:
@@ -245,11 +246,10 @@ def run_project_create(proj_name, proj_path, python_cnf=None):
         return
     proj_path = Path(proj_path)
     executor = ThreadPoolExecutor(max_workers=2)
-    with executor:
-        if python_cnf.get("mkvenv"):
-            executor.submit(create_venv, proj_path, proj_name, python_cnf.get(PYTHON_PTH_LBL))
-        if python_cnf.get("create_template"):
-            executor.submit(create_proj_template, proj_path.joinpath(proj_name))
+    if python_cnf.get("mkvenv"):
+        executor.submit(create_venv, proj_path, proj_name, python_cnf.get(PYTHON_PTH_LBL))
+    if python_cnf.get("create_template"):
+        executor.submit(create_proj_template, proj_path.joinpath(proj_name))
 
 
 class PythonPorjectDialog(Gtk.Dialog):
@@ -359,16 +359,9 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if project:
             style_paths.append(project.base_path)
         self.on_document_close(None, doc)
-        executor = ThreadPoolExecutor(max_workers=2)
-        with executor:
-            executor.submit(
-                run_formatter,
-                DEFAULT_FORMATTER,
-                sci,
-                style_paths=style_paths,
-                line_width=self.DEFAULT_LINE_WIDTH,
-            )
-        return True
+        return run_formatter(
+            DEFAULT_FORMATTER, sci, style_paths=style_paths, line_width=self.DEFAULT_LINE_WIDTH
+        )
 
     def on_document_notify(self, user_data, doc):
         run = self.format_code(doc)
