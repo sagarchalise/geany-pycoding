@@ -3,8 +3,8 @@
 
 #### Comes with:
 
- * Auto Lint Python Files based on [this helper](https://wiki.geany.org/howtos/check_python_code). Runs automatically on open/activation of python files if configured.
- * Format python code option with auto run on save which can be configured. Can use [black](https://black.readthedocs.io/en/stable/) or `autopep8` or `yapf`.
+ * Configurable Linting of Python Files based on [this helper](https://wiki.geany.org/howtos/check_python_code). Runs automatically on open/activation of python files if configured.
+ * Configurable python code formatting option. Can use [black](https://black.readthedocs.io/en/stable/) or `autopep8` or `yapf` whichever is installed. Keybinding and Auto present.
  * Complete Python Code Based on [jedi](https://jedi.readthedocs.io/en/latest/).
  * Opinionated python project initializer for geany based on `virtualenv` and `virtualenvwrapper`
 
