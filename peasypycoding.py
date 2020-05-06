@@ -3,6 +3,7 @@ import site
 import ctypes
 import shutil
 import importlib
+import subprocess
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -88,10 +89,43 @@ if DEFAULT_FORMATTER:
         return None, None
 
 
+PYENV_HOME = Path.home().joinpath(".pyenv")
+VIRTUALENV_HOME = Path.home().joinpath(".virtualenvs")
+PYENV_VENV_HOME = PYENV_HOME.joinpath("versions")
+if PYENV_HOME.exists():
+    has_pyenv = True
+    try:
+        pyenv_venv = {
+            p.split()[0].strip()
+            for p in subprocess.check_output(["pyenv", "virtualenvs"]).decode("utf8").split("\n")
+            if p.strip()
+        }
+        pyenv_versions = {
+            p.strip() if "system" not in p else "system"
+            for p in subprocess.check_output(["pyenv", "versions"]).decode("utf8").split("\n")
+            if p.strip() not in pyenv_venv
+        }
+        from_command = True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pyenv_venv = set()
+        pyenv_versions = set()
+        for d in PYENV_VENV_HOME.iterdir():
+            if d.is_symlink():
+                pyenv_venv.add(d.name)
+            else:
+                pyenv_versions.add(d.name)
+        pyenv_versions.add("system")
+        from_command = False
+else:
+    has_pyenv = False
+
 if HAS_JEDI:
 
-    def jedi_complete(content, fp=None, text=None, sys_path=None, stop_len=25):
-        script = jedi.Script(content, path=fp, sys_path=sys_path)
+    def jedi_complete(content, fp=None, text=None, sys_path=None, stop_len=25, project_dir=None):
+        project = (
+            project_dir if project_dir is None else jedi.Project(project_dir, sys_path=sys_path)
+        )
+        script = jedi.Script(content, path=fp, project=project)
         data = ""
         doc = None
         try:
@@ -125,7 +159,7 @@ if HAS_JEDI:
     def append_project_venv(proj_name):
         if not proj_name:
             return sys.path
-        venv_pth = Path.home().joinpath(".virtualenvs")
+        venv_pth = PYENV_VENV_HOME if has_pyenv else VIRTUALENV_HOME
         if not venv_pth.is_dir():
             return sys.path
         for pth in venv_pth.iterdir():
@@ -166,7 +200,7 @@ def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
     if exceptions:
         try:
             format_text, formatted = code_formatter(contents, style_config=style)
-        except exceptions as exc:
+        except exceptions:
             formatted = None
             Geany.msgwin_compiler_add_string(Geany.MsgColors.RED, str(error))
     else:
@@ -184,11 +218,30 @@ PYTHON_PTH_INDEX = PYCODING_CNF.index(PYTHON_PTH_LBL)
 
 
 def create_venv(proj_path, proj_name, python_pth):
-    virtualenv_home = Path.home().joinpath(".virtualenvs")
-    if not virtualenv_home.is_dir():
-        virtualenv_home.mkdir()
-    virtualenv_home = virtualenv_home.joinpath(proj_name)
     status = "{0} in python venv creation for project: {1}".format("{0}", proj_name)
+    if has_pyenv:
+        project_venv = PYENV_VENV_HOME.joinpath(proj_name)
+        if proj_name not in pyenv_venv:
+            if from_command:
+                args = ["pyenv", "virtualenv", python_pth, proj_name]
+            else:
+                args = "{0} -m venv {1}".format(
+                    "python"
+                    if python_pth == "system"
+                    else PYENV_VENV_HOME.joinpath(python_pth).joinpath("bin/python"),
+                    project_venv,
+                ).split()
+            subprocess.check_call(args)
+            pyenv_venv.add(proj_name)
+    else:
+        try:
+            import virtualenv
+        except ImportError:
+            status = status.format("NO VIRTUALENV: Error")
+        else:
+            if not VIRTUALENV_HOME.exists():
+                VIRTUALENV_HOME.mkdir()
+            project_venv = VIRTUALENV_HOME.joinpath(proj_name)
 
     def write_proj_path(filename):
         if filename.is_file():
@@ -197,28 +250,26 @@ def create_venv(proj_path, proj_name, python_pth):
             of.write(str(proj_path))
 
     try:
-        virtualenv_home = Path.home().joinpath(".virtualenvs")
-        if not virtualenv_home.is_dir():
-            virtualenv_home.mkdir()
-        virtualenv_home = virtualenv_home.joinpath(proj_name)
-        if not virtualenv_home.exists():
-            import virtualenv
-
-            sys.argv = ["virtualenv", "--python={0}".format(python_pth), str(virtualenv_home)]
-            virtualenv.main()
-        st_pk = virtualenv_home.glob("lib/python*/site-packages")
-        st_pk = next(st_pk) if st_pk else None
-        if st_pk and st_pk.is_dir():
-            st_pk = st_pk.joinpath("{0}.pth".format(proj_name))
-            write_proj_path(st_pk)
-        try:
-            import virtualenvwrapper
-        except ImportError:
-            pass
+        if not project_venv.exists():
+            if has_pyenv:
+                status = status.format("PYENV: Error")
+            else:
+                if not VIRTUALENV_HOME.exists():
+                    status = status.format("NO VIRTUALENV: Error")
+                else:
+                    sys.argv = ["virtualenv", "--python={0}".format(python_pth), str(project_venv)]
+                    virtualenv.main()
         else:
-            project_pth = virtualenv_home.joinpath(".project")
+            st_pk = project_venv.glob("lib/python*/site-packages")
+            st_pk = next(st_pk) if st_pk else None
+            if st_pk and st_pk.is_dir():
+                st_pk = st_pk.joinpath("{0}.pth".format(proj_name))
+                write_proj_path(st_pk)
+        venvwrapper = importlib.find_spec("virtualenvwrapper")
+        if venvwrapper is not None:
+            project_pth = project_venv.joinpath(".project")
             if not project_pth.is_file():
-                if st_pk.is_file():
+                if st_pk and st_pk.is_file():
                     shutil.copy2(str(st_pk), str(project_pth))
                 else:
                     write_proj_path(project_pth)
@@ -275,8 +326,17 @@ class PythonPorjectDialog(Gtk.Dialog):
             if index == PYTHON_PTH_INDEX:
                 dir_label = Gtk.Label(_("Virtual Environment Source Python Path:"))
                 dir_label.set_alignment(0, 0.5)
-                button = Gtk.Button(label_to_show)
-                button.connect("clicked", self.on_folder_clicked)
+                if has_pyenv:
+                    button = Gtk.ComboBoxText()
+                    button.insert_text(0, label_to_show)
+                    for nam in pyenv_versions:
+                        if not nam or label_to_show == nam:
+                            continue
+                        button.append_text(nam.strip())
+                    button.set_active(0)
+                else:
+                    button = Gtk.Button(label_to_show)
+                    button.connect("clicked", self.on_folder_clicked)
                 button.set_name(name)
                 box.add(dir_label)
                 box.add(button)
@@ -416,13 +476,18 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 geany_obj.disconnect(self.pyproj_signal)
 
     def on_pyproj_response(self, obj, proj_cnf_file):
-        settings = dict(zip(PYCODING_CNF, [False, False, False, "/usr/bin/python3"]))
+        settings = dict(
+            zip(PYCODING_CNF, [False, False, False, "system" if has_pyenv else "/usr/bin/python3"])
+        )
         for name in PYCODING_CNF:
             try:
                 if name == PYTHON_PTH_LBL:
-                    pth = Path(proj_cnf_file.get_string(NAME, name))
-                    if pth.is_file():
-                        settings[name] = str(pth)
+                    setting = proj_cnf_file.get_string(NAME, name)
+                    if not has_pyenv:
+                        pth = Path(setting)
+                        if pth.is_file():
+                            setting = str(pth)
+                    settings[name] = setting
                 else:
                     settings[name] = proj_cnf_file.get_boolean(NAME, name)
             except (GLib.Error, TypeError):
@@ -439,19 +504,29 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             if ok in (Gtk.ResponseType.APPLY, Gtk.ResponseType.OK):
                 for child in dlg.get_content_area():
                     is_chkbtn = isinstance(child, Gtk.CheckButton)
-                    is_btn = isinstance(child, Gtk.Button)
-                    if not isinstance(child, (Gtk.CheckButton, Gtk.Button)):
+                    is_btn = (
+                        isinstance(child, Gtk.ComboBoxText)
+                        if has_pyenv
+                        else isinstance(child, Gtk.Button)
+                    )
+                    if not (is_chkbtn or is_btn):
                         continue
                     if is_chkbtn:
                         settings[child.get_name()] = child.get_active()
                     elif is_btn:
-                        try:
-                            pth = Path(child.get_label())
-                        except TypeError:
-                            pass
+                        if has_pyenv:
+                            pth = child.get_active_text()
                         else:
-                            if pth.is_file():
-                                settings[child.get_name()] = str(pth)
+                            try:
+                                pth = Path(child.get_label())
+                            except TypeError:
+                                pass
+                            else:
+                                if pth.is_file():
+                                    pth = str(pth)
+                                else:
+                                    pth = ""
+                        settings[child.get_name()] = pth
             dlg.destroy()
         for name, value in settings.items():
             if name == PYTHON_PTH_LBL:
@@ -603,9 +678,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         proj = self.geany_plugin.geany_data.app.project
         path = append_project_venv(proj.name if proj else None)
         try:
-            data = jedi_complete(doc_content, fp=fp, text=text, sys_path=path)
-        except ValueError as e:
-            print(e)
+            project_dir = proj.base_path if proj else None
+            data = jedi_complete(
+                doc_content, fp=fp, text=text, sys_path=path, project_dir=project_dir
+            )
+        except ValueError:
             return
         if not data:
             return
