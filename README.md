@@ -1,3 +1,5 @@
+:warning: **If you are already using [Peasy](https://github.com/kugel-/peasy) then [this](https://github.com/sagarchalise/geany-pycoding/tree/peasy) branch is RECOMMENDED.
+
 # PyCoding Helper for [Geany](https://geany.org)
 
 
