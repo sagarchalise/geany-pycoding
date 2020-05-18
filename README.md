@@ -6,12 +6,19 @@
  * Python Files Linting based on [this helper](https://wiki.geany.org/howtos/check_python_code). Runs automatically on open/activation of python files if configured.
  * Configurable python code formatting option. Can use [black](https://black.readthedocs.io/en/stable/) or `autopep8` or `yapf` whichever is installed. Keybinding and Auto present.
  * Complete Python Code Based on [jedi](https://jedi.readthedocs.io/en/latest/).
- * Opinionated python project initializer for geany based on `virtualenv` and `virtualenvwrapper`
- * when on specific line that has `class` or `def`, document can be generated from editor menu. Formatters are supported as that by `pydocstring` and can be chosen from configuration.
+ * genrate docstring on `class` or `def` definition from menu. 
 
+ #### A python project initializer highly opinionated.
+ * Either `pyenv`/ `virtualenv`/ `virtualenvwrapper` needs to be installed.
+ * Creates a virtualenvironment for python projects during project creation looking inside `$HOME/.virtualenvs/`.
+ * create a folder in project name inside project base path.
+      
+ 
 #### Requirements:
-
- * `black` and `jedi` needs to be installed as well as your favorite linter. I use `flake8`. All in `python3`
+ * All in `python3`. 
+ * `jedi` needs to be installed for completion.
+ * Favorite linter. I use `flake8`. Please modify the linter for your need.
+ * Favorite formatter. I use `black` with line 99.
  * `pydocstring` if you want to use docstring feature.
 
-#### WARNING: MAY BE BUGGY
+:warning: MAY BE BUGGY
