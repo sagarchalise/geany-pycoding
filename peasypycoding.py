@@ -53,6 +53,10 @@ for formatter in ["black", "autopep8", "yapf"]:
 else:  # nobreak
     DEFAULT_FORMATTER = None
 
+is_pydoc_available = is_mod_available("pydocstring")
+if is_pydoc_available:
+    import pydocstring
+
 if DEFAULT_FORMATTER:
     print("Formatter: {}".format(DEFAULT_FORMATTER))
 
@@ -385,6 +389,8 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     lint_signals = None
     pyproj_signal = None
     format_item = None
+    document_item = None
+    docstring_name = None
     DEFAULT_LINE_WIDTH = 79
     default_pth_dir = None
 
@@ -406,6 +412,48 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             return False
         Geany.keybindings_send_command(Geany.KeyGroupID.BUILD, Geany.KeyBindingID.BUILD_LINK)
         return True if check else False
+
+    def on_documentation_item_click(self, item=None):
+        if not is_pydoc_available:
+            return
+        cur_doc = Geany.Document.get_current()
+        if not self.is_doc_python(cur_doc):
+            return
+        sci = cur_doc.editor.sci
+        contents = sci.get_contents(-1)
+        if not contents:
+            return
+
+        try:
+            cur_line = sci.get_current_line()
+            line_content = sci.get_line(cur_line).strip()
+            if not (line_content.startswith(("def", "class")) and line_content.endswith(":")):
+                return
+            doc_text = pydocstring.generate_docstring(
+                contents, position=(cur_line + 1, 0), formatter=self.docstring_name or "google"
+            ).strip()
+        except pydocstring.exc.InvalidFormatterError:
+            return
+        else:
+            if not doc_text or doc_text == "Empty Module":
+                return
+            indent_pref = cur_doc.editor.get_indent_prefs()
+            ind_types = {Geany.IndentType.SPACES: " ", Geany.IndentType.TABS: "\t"}.get(
+                indent_pref.type
+            )
+            insert_pos = sci.get_position_from_line(cur_line + 1)
+            line_indent = sci.get_line_indentation(cur_line + 1)
+            if ind_types == " ":
+                ind_types = ind_types * line_indent
+            doc_text = "\n".join(
+                (
+                    "{0}{1}".format(ind_types, d) if d.strip() else d.strip()
+                    for d in doc_text.split("\n")
+                    if not d.strip().startswith(("self", "cls"))
+                )
+            )
+            template = """{0}'''[DESCRIPTION]\n{1}\n{0}'''\n""".format(ind_types, doc_text)
+            sci.insert_text(insert_pos, template)
 
     def on_format_item_click(self, item=None):
         cur_doc = Geany.Document.get_current()
@@ -549,7 +597,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.pycoding_config = Path(geany_data.app.configdir).joinpath(
             "plugins", "{0}.conf".format(NAME)
         )
-        keys = self.add_key_group(NAME, 1 + int(bool(DEFAULT_FORMATTER)))
+        keys = self.add_key_group(NAME, 1 + int(bool(DEFAULT_FORMATTER)) + int(is_pydoc_available))
         if DEFAULT_FORMATTER:
             self.DEFAULT_LINE_WIDTH = max(
                 geany_data.editor_prefs.long_line_column, geany_data.editor_prefs.line_break_column
@@ -560,6 +608,12 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             geany_data.main_widgets.tools_menu.append(self.format_item)
             self.format_item.show_all()
             keys.add_keybinding("format_python_code", fpc, self.format_item, 0, 0)
+        if is_pydoc_available:
+            dpc = _("Document Python Code")
+            self.document_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, dpc)
+            self.document_item.connect("activate", self.on_documentation_item_click)
+            geany_data.main_widgets.editor_menu.append(self.document_item)
+            keys.add_keybinding("generate_python_docstring", dpc, self.document_item, 0, 0)
         o = geany_data.object
         self.jedi_handler = o.connect("editor-notify", self.on_editor_notify)
         self.doc_close = o.connect("document-close", self.on_document_close)
@@ -572,6 +626,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 setattr(self, cnf, self.keyfile.get_boolean(NAME, cnf[0]))
             except GLib.Error:
                 setattr(self, cnf, True)
+        try:
+            setattr(self, "docstring_name", self.keyfile.get_string(NAME, "docstring_name"))
+        except GLib.Error:
+            self.docstring_name = "google"
         if self.enable_venv_project:
             self.set_pyproj_signal_handler(o)
         self.set_lint_signal_handler(o)
@@ -593,6 +651,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             geany_data.main_widgets.tools_menu.remove(self.format_item)
             self.format_item.destroy()
             self.format_item = None
+        if self.document_item:
+            geany_data.main_widgets.tools_menu.remove(self.document_item)
+            self.document_item.destroy()
+            self.document_item = None
 
     @staticmethod
     def scintilla_command(sci, sci_msg, sci_cmd, lparam, data):
@@ -602,13 +664,17 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             tt = ctypes.cast(data, ctypes.c_void_p).value
             sci.send_message(sci_msg, lparam, tt)
 
-    @staticmethod
-    def is_doc_python(doc):
-        return (
+    def is_doc_python(self, doc):
+        is_python = (
             doc is not None
             and doc.is_valid
             and doc.file_type.id == Geany.FiletypeID.FILETYPES_PYTHON
         )
+        if is_python:
+            self.document_item.show()
+        else:
+            self.document_item.hide()
+        return is_python
 
     def on_editor_notify(self, g_obj, editor, nt):
         cur_doc = editor.document or Geany.Document.get_current()
@@ -711,12 +777,18 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if self.pycoding_config.is_file():
             self.keyfile.load_from_file(conf_file, GLib.KeyFileFlags.KEEP_COMMENTS)
         for child in user_data.get_children():
-            if not isinstance(child, Gtk.CheckButton):
+            if not isinstance(child, (Gtk.CheckButton, Gtk.ComboBoxText)):
                 continue
-            val = child.get_active()
+            try:
+                val = child.get_active_text()
+            except AttributeError:
+                val = child.get_active()
             name = child.get_name()
             setattr(self, name, val)
-            self.keyfile.set_boolean(NAME, name, val)
+            if name != "docstring_name":
+                self.keyfile.set_boolean(NAME, name, val)
+            else:
+                self.keyfile.set_string(NAME, name, val)
         self.keyfile.save_to_file(conf_file)
         obj = self.geany_plugin.geany_data.object
         self.set_lint_signal_handler(obj)
@@ -738,6 +810,19 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             button.set_name(name)
             button.set_active(val)
             vbox.add(button)
+        combo = Gtk.ComboBoxText()
+        name = "docstring_name"
+        val = getattr(self, name)
+        if val not in pydocstring.formatters._formatter_map:
+            val = "google"
+        combo.set_name(name)
+        combo.insert_text(0, val)
+        for name in pydocstring.formatters._formatter_map:
+            if name == val:
+                continue
+            combo.append_text(name)
+        combo.set_active(0)
+        vbox.add(combo)
         align.add(vbox)
         dialog.connect("response", self.on_configure_response, vbox)
         return align
