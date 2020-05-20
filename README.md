@@ -5,6 +5,7 @@
 
  * Python Files Linting based on [this helper](https://wiki.geany.org/howtos/check_python_code). Runs automatically on open/activation of python files if configured.
  * Configurable python code formatting option. Can use [black](https://black.readthedocs.io/en/stable/) or `autopep8` or `yapf` whichever is installed. Keybinding and Auto present.
+    - `isort` will be used if present when formatting.
  * Complete Python Code Based on [jedi](https://jedi.readthedocs.io/en/latest/).
  * genrate docstring on `class` or `def` definition from menu. 
 
@@ -19,6 +20,7 @@
  * `jedi` needs to be installed for completion.
  * Favorite linter. I use `flake8`. Please modify the linter for your need.
  * Favorite formatter. I use `black` with line 99.
+ * `isort` if you use it.
  * `pydocstring` if you want to use docstring feature.
 
 :warning: MAY BE BUGGY

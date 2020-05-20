@@ -57,6 +57,10 @@ is_pydoc_available = is_mod_available("pydocstring")
 if is_pydoc_available:
     import pydocstring
 
+is_isort_available = is_mod_available("isort")
+if is_isort_available:
+    import isort
+
 if DEFAULT_FORMATTER:
     print("Formatter: {}".format(DEFAULT_FORMATTER))
 
@@ -183,6 +187,12 @@ NAME = "pycoding"
 DIR_LABEL = "Choose Python Path"
 
 
+def check_and_format_sort(formated_text, line_length=79):
+    if not is_isort_available:
+        return formated_text
+    sorted_text = isort.SortImports(file_contents=formated_text, line_length=line_length)
+    return sorted_text.output
+
 def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
     if style_paths is None:
         style_paths = []
@@ -209,10 +219,12 @@ def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
             Geany.msgwin_compiler_add_string(Geany.MsgColors.RED, str(error))
     else:
         format_text, formatted = code_formatter(contents, style_config=style)
-    if formatted:
-        pos = scintilla.get_current_position()
-        scintilla.set_text(format_text)
-        scintilla.set_current_position(pos, True)
+    if formatted is not None:
+        sorted_text = check_and_format_sort(format_text or contents, line_length=line_width)
+        if formatted or is_isort_available:
+            pos = scintilla.get_current_position()
+            scintilla.set_text(sorted_text)
+            scintilla.set_current_position(pos, True)
     return formatted if formatted is not None else True
 
 
@@ -395,16 +407,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     default_pth_dir = None
 
     def on_document_lint(self, user_data, doc):
-        run = self.check_and_lint(doc)
-        self.set_menuitem_sensitivity(run)
-
-    def set_menuitem_sensitivity(self, val):
-        if self.format_item:
-            self.format_item.set_sensitive(val)
+        self.check_and_lint(doc)
 
     def on_document_close(self, user_data, doc):
         Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
-        self.set_menuitem_sensitivity(False)
 
     def check_and_lint(self, doc, check=True):
         self.on_document_close(None, doc)
@@ -452,7 +458,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                     if not d.strip().startswith(("self", "cls"))
                 )
             )
-            template = """{0}'''[DESCRIPTION]\n{1}\n{0}'''\n""".format(ind_types, doc_text)
+            template = """{0}'''[DESCRIPTION]\n\n{1}\n{0}'''\n""".format(ind_types, doc_text)
             sci.insert_text(insert_pos, template)
 
     def on_format_item_click(self, item=None):
@@ -479,9 +485,8 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         )
 
     def on_document_notify(self, user_data, doc):
-        run = self.format_code(doc)
-        self.set_menuitem_sensitivity(run)
-
+        self.format_code(doc)
+        
     def set_format_signal_handler(self, geany_obj=None):
         if not DEFAULT_FORMATTER:
             return
@@ -605,8 +610,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             fpc = _("Format Python Code")
             self.format_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, fpc)
             self.format_item.connect("activate", self.on_format_item_click)
-            geany_data.main_widgets.tools_menu.append(self.format_item)
-            self.format_item.show_all()
+            geany_data.main_widgets.editor_menu.append(self.format_item)
             keys.add_keybinding("format_python_code", fpc, self.format_item, 0, 0)
         if is_pydoc_available:
             dpc = _("Document Python Code")
@@ -648,11 +652,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.enable_venv_project = False
         self.set_pyproj_signal_handler(o)
         if self.format_item:
-            geany_data.main_widgets.tools_menu.remove(self.format_item)
+            geany_data.main_widgets.editor_menu.remove(self.format_item)
             self.format_item.destroy()
             self.format_item = None
         if self.document_item:
-            geany_data.main_widgets.tools_menu.remove(self.document_item)
+            geany_data.main_widgets.editor_menu.remove(self.document_item)
             self.document_item.destroy()
             self.document_item = None
 
@@ -672,8 +676,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         )
         if is_python:
             self.document_item.show()
+            self.format_item.show()
         else:
             self.document_item.hide()
+            self.format_item.hide()
         return is_python
 
     def on_editor_notify(self, g_obj, editor, nt):
