@@ -1,17 +1,13 @@
-import sys
-import site
 import ctypes
-import shutil
 import importlib
+import shutil
+import site
 import subprocess
-from pathlib import Path
+import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-from gi.repository import Gtk
-from gi.repository import GLib
-from gi.repository import Geany
-from gi.repository import GeanyScintilla
-from gi.repository import Peasy
+from gi.repository import Geany, GeanyScintilla, GLib, Gtk, Peasy
 
 try:
     import jedi
@@ -192,6 +188,7 @@ def check_and_format_sort(formated_text, line_length=79):
         return formated_text
     sorted_text = isort.SortImports(file_contents=formated_text, line_length=line_length)
     return sorted_text.output
+
 
 def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
     if style_paths is None:
@@ -437,29 +434,24 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 return
             doc_text = pydocstring.generate_docstring(
                 contents, position=(cur_line + 1, 0), formatter=self.docstring_name or "google"
-            ).strip()
+            )
         except pydocstring.exc.InvalidFormatterError:
             return
         else:
-            if not doc_text or doc_text == "Empty Module":
+            if not doc_text.strip() or doc_text.strip() == "Empty Module":
                 return
             indent_pref = cur_doc.editor.get_indent_prefs()
-            ind_types = {Geany.IndentType.SPACES: " ", Geany.IndentType.TABS: "\t"}.get(
-                indent_pref.type
-            )
-            insert_pos = sci.get_position_from_line(cur_line + 1)
-            line_indent = sci.get_line_indentation(cur_line + 1)
-            if ind_types == " ":
-                ind_types = ind_types * line_indent
-            doc_text = "\n".join(
-                (
-                    "{0}{1}".format(ind_types, d) if d.strip() else d.strip()
-                    for d in doc_text.split("\n")
-                    if not d.strip().startswith(("self", "cls"))
-                )
-            )
-            template = """{0}'''[DESCRIPTION]\n\n{1}\n{0}'''\n""".format(ind_types, doc_text)
-            sci.insert_text(insert_pos, template)
+            insert_pos = sci.get_line_end_position(cur_line)
+            ind_type = " " * indent_pref.width if Geany.IndentType.SPACES else "\t"
+            start_end = "{0}'''".format(ind_type)
+            template = ["\n{0}...".format(start_end)]
+            for doc in doc_text.splitlines():
+                if self.docstring_name == "numpy":
+                    template.append(doc)
+                else:
+                    template.append(doc if not doc else "{0}{1}".format(ind_type, doc))
+            template.append(start_end)
+            cur_doc.editor.insert_text_block("\n".join(template), insert_pos, -1, -1, False)
 
     def on_format_item_click(self, item=None):
         cur_doc = Geany.Document.get_current()
@@ -486,7 +478,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
 
     def on_document_notify(self, user_data, doc):
         self.format_code(doc)
-        
+
     def set_format_signal_handler(self, geany_obj=None):
         if not DEFAULT_FORMATTER:
             return
@@ -613,7 +605,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             geany_data.main_widgets.editor_menu.append(self.format_item)
             keys.add_keybinding("format_python_code", fpc, self.format_item, 0, 0)
         if is_pydoc_available:
-            dpc = _("Document Python Code")
+            dpc = _("Docstring for Python Code Block")
             self.document_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, dpc)
             self.document_item.connect("activate", self.on_documentation_item_click)
             geany_data.main_widgets.editor_menu.append(self.document_item)
@@ -771,10 +763,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.on_document_close(None, cur_doc)
         if not can_doc:
             return
-        Geany.msgwin_compiler_add_string(Geany.MsgColors.BLACK, "Doc:\n" + data)
-        # line -= 1
-        # Geany.msgwin_msg_add_string(Geany.MsgColors.BLACK, line, cur_doc, "Doc:\n" + data)
-        # Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.MESSAGE, False)
+        data = "Doc:\n{0}".format(data)
+        Geany.msgwin_compiler_add_string(Geany.MsgColors.BLACK, data)
+        # FIXME: not working, dunno why
+        #  Geany.msgwin_msg_add_string(Geany.MsgColors.BLACK, line, cur_doc, data)
+        #  Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.MESSAGE, False)
 
     def on_configure_response(self, dlg, response_id, user_data):
         if response_id not in (Gtk.ResponseType.APPLY, Gtk.ResponseType.OK):
@@ -786,15 +779,15 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             if not isinstance(child, (Gtk.CheckButton, Gtk.ComboBoxText)):
                 continue
             try:
-                val = child.get_active_text()
+                cnf_val = child.get_active_text()
             except AttributeError:
-                val = child.get_active()
+                cnf_val = child.get_active()
             name = child.get_name()
-            setattr(self, name, val)
+            setattr(self, name, cnf_val)
             if name != "docstring_name":
-                self.keyfile.set_boolean(NAME, name, val)
+                self.keyfile.set_boolean(NAME, name, cnf_val)
             else:
-                self.keyfile.set_string(NAME, name, val)
+                self.keyfile.set_string(NAME, name, cnf_val)
         self.keyfile.save_to_file(conf_file)
         obj = self.geany_plugin.geany_data.object
         self.set_lint_signal_handler(obj)
@@ -807,26 +800,28 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         vbox.set_border_width(2)
         for name, cnf in ENABLE_CONFIGS.items():
             try:
-                val = getattr(self, name)
+                cnf_val = getattr(self, name)
             except AttributeError:
-                val = True
-                setattr(self, name, val)
+                cnf_val = True
+                setattr(self, name, cnf_val)
             button = Gtk.CheckButton(cnf[0])
             button.set_tooltip_text(cnf[1])
             button.set_name(name)
-            button.set_active(val)
+            button.set_active(cnf_val)
             vbox.add(button)
+        label = Gtk.Label("Format for docstring:")
+        vbox.add(label)
         combo = Gtk.ComboBoxText()
         name = "docstring_name"
-        val = getattr(self, name)
-        if val not in pydocstring.formatters._formatter_map:
-            val = "google"
+        docstring_val = self.docstring_name
+        if docstring_val not in pydocstring.formatters._formatter_map:
+            docstring_val = "google"
         combo.set_name(name)
-        combo.insert_text(0, val)
-        for name in pydocstring.formatters._formatter_map:
-            if name == val:
+        combo.insert_text(0, docstring_val)
+        for docstring_name in pydocstring.formatters._formatter_map:
+            if docstring_name == docstring_val:
                 continue
-            combo.append_text(name)
+            combo.append_text(docstring_name)
         combo.set_active(0)
         vbox.add(combo)
         align.add(vbox)
