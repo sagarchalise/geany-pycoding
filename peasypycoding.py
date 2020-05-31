@@ -7,7 +7,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from gi.repository import Geany, GeanyScintilla, GLib, Gtk, Peasy
+from gi.repository import Geany
+from gi.repository import GeanyScintilla
+from gi.repository import GLib
+from gi.repository import Gtk
+from gi.repository import Peasy
 
 try:
     import jedi
@@ -116,8 +120,10 @@ if PYENV_HOME.exists():
         for d in PYENV_VENV_HOME.iterdir():
             if d.is_symlink():
                 pyenv_venv.add(d.name)
-            else:
+            elif d.name.startswith(("3.", "pypy")):
                 pyenv_versions.add(d.name)
+            else:
+                pyenv_venv.add(d.name)
         pyenv_versions.add("system")
         from_command = False
 else:
