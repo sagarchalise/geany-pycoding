@@ -7,11 +7,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from gi.repository import Geany
-from gi.repository import GeanyScintilla
-from gi.repository import GLib
-from gi.repository import Gtk
-from gi.repository import Peasy
+from gi.repository import Geany, GeanyScintilla, GLib, Gtk, Peasy
 
 try:
     import jedi
@@ -192,7 +188,14 @@ DIR_LABEL = "Choose Python Path"
 def check_and_format_sort(formated_text, line_length=79):
     if not is_isort_available:
         return formated_text
-    sorted_text = isort.SortImports(file_contents=formated_text, line_length=line_length)
+    sort_cnf = {
+        "multi_line_output": 3,
+        "force_grid_wrap": 0,
+        "use_parentheses": True,
+        "line_length": line_length,
+        "include_trailing_comma": True,
+    }
+    sorted_text = isort.SortImports(file_contents=formated_text, **sort_cnf)
     return sorted_text.output
 
 
