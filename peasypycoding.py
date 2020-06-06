@@ -114,9 +114,7 @@ if PYENV_HOME.exists():
         pyenv_venv = set()
         pyenv_versions = set()
         for d in PYENV_VENV_HOME.iterdir():
-            if d.is_symlink():
-                pyenv_venv.add(d.name)
-            elif d.name.startswith(("3.", "pypy")):
+            if d.name.startswith(("3.", "pypy")):
                 pyenv_versions.add(d.name)
             else:
                 pyenv_venv.add(d.name)
@@ -240,6 +238,13 @@ PYTHON_PTH_INDEX = PYCODING_CNF.index(PYTHON_PTH_LBL)
 
 
 def create_venv(proj_path, proj_name, python_pth):
+    def write_proj_path(filename):
+        if filename.is_file():
+            return
+        with open(str(filename), "w") as of:
+            of.write(str(proj_path))
+
+    venvwrapper = None
     status = "{0} in python venv creation for project: {1}".format("{0}", proj_name)
     if has_pyenv:
         project_venv = PYENV_VENV_HOME.joinpath(proj_name)
@@ -255,6 +260,8 @@ def create_venv(proj_path, proj_name, python_pth):
                 ).split()
             subprocess.check_call(args)
             pyenv_venv.add(proj_name)
+        else:
+            status = status.format("Already present: No need")
     else:
         try:
             import virtualenv
@@ -264,37 +271,24 @@ def create_venv(proj_path, proj_name, python_pth):
             if not VIRTUALENV_HOME.exists():
                 VIRTUALENV_HOME.mkdir()
             project_venv = VIRTUALENV_HOME.joinpath(proj_name)
-
-    def write_proj_path(filename):
-        if filename.is_file():
-            return
-        with open(str(filename), "w") as of:
-            of.write(str(proj_path))
+            sys.argv = ["virtualenv", "--python={0}".format(python_pth), str(project_venv)]
+            virtualenv.main()
+            venvwrapper = importlib.find_spec("virtualenvwrapper")
 
     try:
-        if not project_venv.exists():
-            if has_pyenv:
-                status = status.format("PYENV: Error")
-            else:
-                if not VIRTUALENV_HOME.exists():
-                    status = status.format("NO VIRTUALENV: Error")
-                else:
-                    sys.argv = ["virtualenv", "--python={0}".format(python_pth), str(project_venv)]
-                    virtualenv.main()
-        else:
+        if project_venv.exists():
             st_pk = project_venv.glob("lib/python*/site-packages")
             st_pk = next(st_pk) if st_pk else None
             if st_pk and st_pk.is_dir():
                 st_pk = st_pk.joinpath("{0}.pth".format(proj_name))
                 write_proj_path(st_pk)
-        venvwrapper = importlib.find_spec("virtualenvwrapper")
-        if venvwrapper is not None:
-            project_pth = project_venv.joinpath(".project")
-            if not project_pth.is_file():
-                if st_pk and st_pk.is_file():
-                    shutil.copy2(str(st_pk), str(project_pth))
-                else:
-                    write_proj_path(project_pth)
+            if venvwrapper is not None:
+                project_pth = project_venv.joinpath(".project")
+                if not project_pth.is_file():
+                    if st_pk and st_pk.is_file():
+                        shutil.copy2(str(st_pk), str(project_pth))
+                    else:
+                        write_proj_path(project_pth)
     except Exception:
         status = status.format("Error")
     else:
@@ -441,9 +435,21 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             line_content = sci.get_line(cur_line).strip()
             if not (line_content.startswith(("def", "class")) and line_content.endswith(":")):
                 return
-            doc_text = pydocstring.generate_docstring(
-                contents, position=(cur_line + 1, 0), formatter=self.docstring_name or "google"
-            )
+            add_to = 1
+            while True:
+                if add_to > 2:
+                    break
+                doc_text = pydocstring.generate_docstring(
+                    contents,
+                    position=(cur_line + add_to, 0),
+                    formatter=self.docstring_name or "google",
+                )
+                add_to += 1
+                dt = doc_text.strip()
+                if not dt or dt == "Empty Module":
+                    continue
+                elif dt:
+                    break
         except pydocstring.exc.InvalidFormatterError:
             return
         else:
