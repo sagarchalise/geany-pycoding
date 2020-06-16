@@ -4,23 +4,21 @@
 #### Comes with:
 
  * Python Files Linting based on [this helper](https://wiki.geany.org/howtos/check_python_code). Runs automatically on open/activation of python files if configured.
- * Configurable python code formatting option. Can use [black](https://black.readthedocs.io/en/stable/) or `autopep8` or `yapf` whichever is installed. Keybinding and Auto present.
-    - `isort` will be used if present when formatting.
- * Complete Python Code Based on [jedi](https://jedi.readthedocs.io/en/latest/).
- * genrate docstring on `class` or `def` definition from menu. 
+ * Code Formatting:
+    - Can use [black](https://black.readthedocs.io/en/stable/)(**prioritized**) or `autopep8` or `yapf` whichever is installed.
+    - Configurable through keybinding as well as can be run automatically during saves. Is available in context menu as well.
+* Complete Python Code Based on [jedi](https://jedi.readthedocs.io/en/latest/).
+* Genrate docstring on `class` or `def` definition from menu if `pydocstring` installed. **OPTIONAL** 
 
- #### A python project initializer highly opinionated.
- * Either `pyenv`/ `virtualenv`/ `virtualenvwrapper` needs to be installed.
- * Creates a virtualenvironment for python projects during project creation looking inside `$HOME/.virtualenvs/`.
- * create a folder in project name inside project base path.
+#### A python project initializer highly opinionated.
+* Either `pyenv`/ `virtualenv`/ `virtualenvwrapper` needs to be installed.
+* Creates a virtualenvironment for python projects during project creation looking inside `$HOME/.virtualenvs/` or `pyenv` setup.
+* Create a folder in project name inside project base path.
       
  
 #### Requirements:
- * All in `python3`. 
- * `jedi` needs to be installed for completion.
- * Favorite linter. I use `flake8`. Please modify the linter for your need.
- * Favorite formatter. I use `black` with line 99.
- * `isort` if you use it.
- * `pydocstring` if you want to use docstring feature.
-
-:warning: MAY BE BUGGY
+* All in `python3`.
+* `jedi` needs to be installed for completion.
+* Favorite linter of choice. `flake8` or `pylint` or others.
+* Favorite formatter of choice amongst `black`, `yapf` and `auopep8`.
+* `pydocstring` if docstring feature is required.
