@@ -53,20 +53,15 @@ is_pydoc_available = is_mod_available("pydocstring")
 if is_pydoc_available:
     import pydocstring
 
-is_isort_available = is_mod_available("isort")
-if is_isort_available:
-    import isort
-
 if DEFAULT_FORMATTER:
     print("Formatter: {}".format(DEFAULT_FORMATTER))
 
     def get_formatter(name=DEFAULT_FORMATTER):
+        get_default_style_for_dir = None
         if name == "black":
             import black
 
-            GetDefaultStyleForDir = None
-
-            def FormatCode(content, style_config=None):
+            def format_code(content, style_config=None):
                 try:
                     mode = black.FileMode(line_length=style_config["line_width"])
                     changed_content = black.format_file_contents(content, fast=True, mode=mode)
@@ -75,21 +70,21 @@ if DEFAULT_FORMATTER:
                 else:
                     return changed_content, True
 
-            return FormatCode, GetDefaultStyleForDir, black.InvalidInput
+            return format_code, get_default_style_for_dir, black.InvalidInput
         elif name == "yapf":
-            from yapf.yapflib.yapf_api import FormatCode  # reformat a string of code
+            from yapf.yapflib.yapf_api import FormatCode
             from yapf.yapflib.file_resources import GetDefaultStyleForDir
+            from lib2to3.pgen2 import parse
 
-            return FormatCode, GetDefaultStyleForDir, None
+            return FormatCode, GetDefaultStyleForDir, parse.ParseError
         elif name == "autopep8":
             from autopep8 import fix_code
 
-            GetDefaultStyleForDir = None
+            def format_code(content, style=None):
+                fixed_code = fix_code(content, options={"max_line_length": style["line_width"]})
+                return fixed_code, True
 
-            def FormatCode(content, style=None):
-                return fix_code(content, options={"max_line_length": style["line_width"]})
-
-            return FormatCode, GetDefaultStyleForDir, None
+            return format_code, get_default_style_for_dir, None
         return None, None
 
 
@@ -183,20 +178,6 @@ NAME = "pycoding"
 DIR_LABEL = "Choose Python Path"
 
 
-def check_and_format_sort(formated_text, line_length=79):
-    if not is_isort_available:
-        return formated_text
-    sort_cnf = {
-        "multi_line_output": 3,
-        "force_grid_wrap": 0,
-        "use_parentheses": True,
-        "line_length": line_length,
-        "include_trailing_comma": True,
-    }
-    sorted_text = isort.SortImports(file_contents=formated_text, **sort_cnf)
-    return sorted_text.output
-
-
 def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
     if style_paths is None:
         style_paths = []
@@ -223,12 +204,10 @@ def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
             Geany.msgwin_compiler_add_string(Geany.MsgColors.RED, str(error))
     else:
         format_text, formatted = code_formatter(contents, style_config=style)
-    if formatted is not None:
-        sorted_text = check_and_format_sort(format_text or contents, line_length=line_width)
-        if formatted or is_isort_available:
-            pos = scintilla.get_current_position()
-            scintilla.set_text(sorted_text)
-            scintilla.set_current_position(pos, True)
+    if formatted:
+        pos = scintilla.get_current_position()
+        scintilla.set_text(format_text)
+        scintilla.set_current_position(pos, True)
     return formatted if formatted is not None else True
 
 
