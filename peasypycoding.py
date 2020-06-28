@@ -35,57 +35,58 @@ ENABLE_CONFIGS = {
 
 def is_mod_available(modname):
     try:
-        importlib.import_module(modname)
+        return importlib.util.find_spec(modname) is not None
     except ImportError:
         return False
-    else:
-        return True
 
 
-for formatter in ["black", "autopep8", "yapf"]:
-    if is_mod_available(formatter):
-        DEFAULT_FORMATTER = formatter
-        break
-else:  # nobreak
-    DEFAULT_FORMATTER = None
+DEFAULT_FORMATTER = "black"
+DEFAULTS = {"docstring_name": "google", "formatter_name": DEFAULT_FORMATTER}
+FORMATTER_TYPES = {DEFAULT_FORMATTER, "autopep8", "yapf"}
 
 is_pydoc_available = is_mod_available("pydocstring")
 if is_pydoc_available:
     import pydocstring
 
-if DEFAULT_FORMATTER:
-    print("Formatter: {}".format(DEFAULT_FORMATTER))
 
-    def get_formatter(name=DEFAULT_FORMATTER):
-        get_default_style_for_dir = None
-        if name == "black":
-            import black
+def get_formatter(name=DEFAULT_FORMATTER):
+    if not is_mod_available(name):
+        print("No Formatter: {0}".format(name))
+        return (
+            None,
+            None,
+            None,
+        )
+    print("Formatter: {0}".format(name))
+    get_default_style_for_dir = None
+    if name == "black":
+        import black
 
-            def format_code(content, style_config=None):
-                try:
-                    mode = black.FileMode(line_length=style_config["line_width"])
-                    changed_content = black.format_file_contents(content, fast=True, mode=mode)
-                except black.NothingChanged:
-                    return "", False
-                else:
-                    return changed_content, True
+        def format_code(content, style_config=None):
+            try:
+                mode = black.FileMode(line_length=style_config["line_width"])
+                changed_content = black.format_file_contents(content, fast=True, mode=mode)
+            except black.NothingChanged:
+                return "", False
+            else:
+                return changed_content, True
 
-            return format_code, get_default_style_for_dir, black.InvalidInput
-        elif name == "yapf":
-            from yapf.yapflib.yapf_api import FormatCode
-            from yapf.yapflib.file_resources import GetDefaultStyleForDir
-            from lib2to3.pgen2 import parse
+        return format_code, get_default_style_for_dir, black.InvalidInput
+    elif name == "yapf":
+        from yapf.yapflib.yapf_api import FormatCode
+        from yapf.yapflib.file_resources import GetDefaultStyleForDir
+        from lib2to3.pgen2 import parse
 
-            return FormatCode, GetDefaultStyleForDir, parse.ParseError
-        elif name == "autopep8":
-            from autopep8 import fix_code
+        return FormatCode, GetDefaultStyleForDir, parse.ParseError
+    elif name == "autopep8":
+        from autopep8 import fix_code
 
-            def format_code(content, style=None):
-                fixed_code = fix_code(content, options={"max_line_length": style["line_width"]})
-                return fixed_code, True
+        def format_code(content, style=None):
+            fixed_code = fix_code(content, options={"max_line_length": style["line_width"]})
+            return fixed_code, True
 
-            return format_code, get_default_style_for_dir, None
-        return None, None
+        return format_code, get_default_style_for_dir, None
+    return (None, None, None)
 
 
 PYENV_HOME = Path.home().joinpath(".pyenv")
@@ -176,39 +177,6 @@ if HAS_JEDI:
 
 NAME = "pycoding"
 DIR_LABEL = "Choose Python Path"
-
-
-def run_formatter(formatter, scintilla, line_width=99, style_paths=None):
-    if style_paths is None:
-        style_paths = []
-    contents = scintilla.get_contents(-1)
-    if not contents:
-        return False
-    code_formatter, default_style_dir, exceptions = get_formatter(DEFAULT_FORMATTER)
-    if default_style_dir is not None:
-        for path in style_paths:
-            style = default_style_dir(path)
-            if style:
-                break
-        else:  # nobreak
-            style = {}
-        style["COLUMN_LIMIT"] = line_width
-    else:
-        style = {"line_width": line_width}
-    error = None
-    if exceptions:
-        try:
-            format_text, formatted = code_formatter(contents, style_config=style)
-        except exceptions:
-            formatted = None
-            Geany.msgwin_compiler_add_string(Geany.MsgColors.RED, str(error))
-    else:
-        format_text, formatted = code_formatter(contents, style_config=style)
-    if formatted:
-        pos = scintilla.get_current_position()
-        scintilla.set_text(format_text)
-        scintilla.set_current_position(pos, True)
-    return formatted if formatted is not None else True
 
 
 PYTHON_PTH_LBL = "python_path"
@@ -381,9 +349,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     pyproj_signal = None
     format_item = None
     document_item = None
-    docstring_name = None
+    docstring_name = "google"
     DEFAULT_LINE_WIDTH = 79
     default_pth_dir = None
+    formatter_name = DEFAULT_FORMATTER
 
     def on_document_lint(self, user_data, doc):
         self.check_and_lint(doc)
@@ -452,11 +421,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.format_code(cur_doc)
 
     def format_code(self, doc):
-        if not (DEFAULT_FORMATTER and self.is_doc_python(doc)):
+        if not (self.formatter_name and self.is_doc_python(doc)):
             return False
         sci = doc.editor.sci
-        contents = sci.get_contents(-1)
-        if not contents:
+        code_contents = sci.get_contents(-1)
+        if not code_contents:
             return False
         try:
             style_paths = [str(Path(doc.real_path).parent)]
@@ -466,15 +435,38 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if project:
             style_paths.append(project.base_path)
         self.on_document_close(None, doc)
-        return run_formatter(
-            DEFAULT_FORMATTER, sci, style_paths=style_paths, line_width=self.DEFAULT_LINE_WIDTH
-        )
+        code_formatter, default_style_dir, exceptions = get_formatter(self.formatter_name)
+        if code_formatter is None:
+            return False
+        if default_style_dir is not None:
+            for path in style_paths:
+                style = default_style_dir(path)
+                if style:
+                    break
+            else:  # nobreak
+                style = {}
+            style["COLUMN_LIMIT"] = self.DEFAULT_LINE_WIDTH
+        else:
+            style = {"line_width": self.DEFAULT_LINE_WIDTH}
+        if exceptions:
+            try:
+                format_text, formatted = code_formatter(code_contents, style_config=style)
+            except exceptions as error:
+                formatted = None
+                Geany.msgwin_compiler_add_string(Geany.MsgColors.RED, str(error))
+        else:
+            format_text, formatted = code_formatter(code_contents, style_config=style)
+        if formatted:
+            pos = sci.get_current_position()
+            sci.set_text(format_text)
+            sci.set_current_position(pos, True)
+        return formatted if formatted is not None else True
 
     def on_document_notify(self, user_data, doc):
         self.format_code(doc)
 
     def set_format_signal_handler(self, geany_obj=None):
-        if not DEFAULT_FORMATTER:
+        if not self.formatter_name:
             return
         if not geany_obj:
             geany_obj = self.geany_plugin.geany_data.object
@@ -588,16 +580,17 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.pycoding_config = Path(geany_data.app.configdir).joinpath(
             "plugins", "{0}.conf".format(NAME)
         )
-        keys = self.add_key_group(NAME, 1 + int(bool(DEFAULT_FORMATTER)) + int(is_pydoc_available))
-        if DEFAULT_FORMATTER:
-            self.DEFAULT_LINE_WIDTH = max(
-                geany_data.editor_prefs.long_line_column, geany_data.editor_prefs.line_break_column
-            )
-            fpc = _("Format Python Code")
-            self.format_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, fpc)
-            self.format_item.connect("activate", self.on_format_item_click)
-            geany_data.main_widgets.editor_menu.append(self.format_item)
-            keys.add_keybinding("format_python_code", fpc, self.format_item, 0, 0)
+        keys = self.add_key_group(
+            NAME, 1 + int(bool(self.formatter_name)) + int(is_pydoc_available)
+        )
+        self.DEFAULT_LINE_WIDTH = max(
+            geany_data.editor_prefs.long_line_column, geany_data.editor_prefs.line_break_column
+        )
+        fpc = _("Format Python Code")
+        self.format_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, fpc)
+        self.format_item.connect("activate", self.on_format_item_click)
+        geany_data.main_widgets.editor_menu.append(self.format_item)
+        keys.add_keybinding("format_python_code", fpc, self.format_item, 0, 0)
         if is_pydoc_available:
             dpc = _("Docstring for Python Code Block")
             self.document_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, dpc)
@@ -616,10 +609,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 setattr(self, cnf, self.keyfile.get_boolean(NAME, cnf[0]))
             except GLib.Error:
                 setattr(self, cnf, True)
-        try:
-            setattr(self, "docstring_name", self.keyfile.get_string(NAME, "docstring_name"))
-        except GLib.Error:
-            self.docstring_name = "google"
+        for name in {"docstring_name", "formatter_name"}:
+            try:
+                setattr(self, name, self.keyfile.get_string(NAME, name).lower())
+            except GLib.Error:
+                setattr(self, name, DEFAULTS[name])
         if self.enable_venv_project:
             self.set_pyproj_signal_handler(o)
         self.set_lint_signal_handler(o)
@@ -778,7 +772,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 cnf_val = child.get_active()
             name = child.get_name()
             setattr(self, name, cnf_val)
-            if name != "docstring_name":
+            if name not in {"docstring_name", "formatter_name"}:
                 self.keyfile.set_boolean(NAME, name, cnf_val)
             else:
                 self.keyfile.set_string(NAME, name, cnf_val)
@@ -803,19 +797,26 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             button.set_name(name)
             button.set_active(cnf_val)
             vbox.add(button)
+        label = Gtk.Label("Code Formatter:")
+        vbox.add(label)
+        combo = Gtk.ComboBoxText()
+        combo.set_name("formatter_name")
+        for formatter_name in FORMATTER_TYPES:
+            if formatter_name == self.formatter_name:
+                combo.insert_text(0, formatter_name)
+            else:
+                combo.append_text(formatter_name)
+        combo.set_active(0)
+        vbox.add(combo)
         label = Gtk.Label("Format for docstring:")
         vbox.add(label)
         combo = Gtk.ComboBoxText()
-        name = "docstring_name"
-        docstring_val = self.docstring_name
-        if docstring_val not in pydocstring.formatters._formatter_map:
-            docstring_val = "google"
-        combo.set_name(name)
-        combo.insert_text(0, docstring_val)
+        combo.set_name("docstring_name")
         for docstring_name in pydocstring.formatters._formatter_map:
-            if docstring_name == docstring_val:
-                continue
-            combo.append_text(docstring_name)
+            if docstring_name == self.docstring_name:
+                combo.insert_text(0, docstring_name)
+            else:
+                combo.append_text(docstring_name)
         combo.set_active(0)
         vbox.add(combo)
         align.add(vbox)
