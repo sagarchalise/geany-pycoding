@@ -1,9 +1,9 @@
 import ctypes
 import importlib
-import shutil
 import site
 import subprocess
 import sys
+import configparser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -92,56 +92,57 @@ def get_formatter(name=DEFAULT_FORMATTER):
 PYENV_HOME = Path.home().joinpath(".pyenv")
 VIRTUALENV_HOME = Path.home().joinpath(".virtualenvs")
 PYENV_VENV_HOME = PYENV_HOME.joinpath("versions")
+pyenv_versions = set()
 if PYENV_HOME.exists():
     has_pyenv = True
     try:
-        pyenv_venv = {
-            p.split()[0].strip()
-            for p in subprocess.check_output(["pyenv", "virtualenvs"]).decode("utf8").split("\n")
-            if p.strip()
-        }
         pyenv_versions = {
             p.strip() if "system" not in p else "system"
             for p in subprocess.check_output(["pyenv", "versions"]).decode("utf8").split("\n")
-            if p.strip() not in pyenv_venv
         }
         from_command = True
     except (subprocess.CalledProcessError, FileNotFoundError):
-        pyenv_venv = set()
-        pyenv_versions = set()
-        for d in PYENV_VENV_HOME.iterdir():
-            if d.name.startswith(("3.", "pypy")):
-                pyenv_versions.add(d.name)
-            else:
-                pyenv_venv.add(d.name)
+        pyenv_versions = {d.name for d in PYENV_VENV_HOME.iterdir() if d.is_dir()}
         pyenv_versions.add("system")
         from_command = False
 else:
+    if VIRTUALENV_HOME.exists():
+        pyenv_versions = {d.name for d in VIRTUALENV_HOME.iterdir() if d.is_dir()}
     has_pyenv = False
 
 if HAS_JEDI:
 
-    def jedi_complete(content, fp=None, text=None, sys_path=None, stop_len=25, project_dir=None):
+    def jedi_complete(
+        content, fp=None, text=None, sys_path=None, stop_len=25, project_dir=None, is_doc=True
+    ):
         project = (
             project_dir if project_dir is None else jedi.Project(project_dir, sys_path=sys_path)
         )
         script = jedi.Script(content, path=fp, project=project)
         data = ""
-        doc = None
         try:
             completions = script.completions()
         except AttributeError:
             return data
         for count, complete in enumerate(completions):
             name = complete.name
-            if name.startswith("__") and name.endswith("__"):
+            if text is None and name.startswith("__") and name.endswith("__"):
                 continue
             if text is not None:
                 if text != name:
                     continue
                 if not (complete.is_keyword or (complete.type and complete.type == "module")):
-                    doc = complete.docstring()
-                    return doc or ""
+                    if is_doc:
+                        return complete.docstring() or ""
+                    sig = complete.get_signatures()
+                    if sig:
+                        sig = sig[0]
+                        ret_string = sig._signature.annotation_string
+                        params = ",\n    ".join(p.to_string() for p in sig.params)
+                        sig = "{0}({1})".format(text, params)
+                        if ret_string:
+                            sig += " -> " + ret_string
+                    return sig
                 break
             if count > 0:
                 data += "\n"
@@ -156,14 +157,21 @@ if HAS_JEDI:
                 break
         return data
 
-    def append_project_venv(proj_name):
-        if not proj_name:
+    def append_project_venv(project):
+        if not project:
             return sys.path
+        site.addsitedir(project.base_path)
+        proj_name = project.name
+        cnf = configparser.ConfigParser()
+        cnf.read(project.file_name)
+        already_pth = cnf.get(NAME, PYTHON_PTH_LBL, fallback=None)
+        if not already_pth:
+            already_pth = proj_name
         venv_pth = PYENV_VENV_HOME if has_pyenv else VIRTUALENV_HOME
         if not venv_pth.is_dir():
             return sys.path
         for pth in venv_pth.iterdir():
-            if pth.name.startswith(proj_name.lower()) and pth.is_dir():
+            if pth.name.startswith((already_pth, already_pth.lower())) and pth.is_dir():
                 st_pk = pth.glob("lib/python*/site-packages")
                 st_pk = next(st_pk) if st_pk else None
                 if st_pk and st_pk.is_dir():
@@ -181,61 +189,59 @@ DIR_LABEL = "Choose Python Path"
 
 PYTHON_PTH_LBL = "python_path"
 PYCODING_CNF = ("is_pyproj", "create_template", "mkvenv", PYTHON_PTH_LBL)
-PYTHON_PTH_INDEX = PYCODING_CNF.index(PYTHON_PTH_LBL)
 
 
 def create_venv(proj_path, proj_name, python_pth):
-    def write_proj_path(filename):
-        if filename.is_file():
-            return
-        with open(str(filename), "w") as of:
-            of.write(str(proj_path))
-
     venvwrapper = None
-    status = "{0} in python venv creation for project: {1}".format("{0}", proj_name)
-    if has_pyenv:
-        project_venv = PYENV_VENV_HOME.joinpath(proj_name)
-        if proj_name not in pyenv_venv:
-            if from_command:
-                args = ["pyenv", "virtualenv", python_pth, proj_name]
-            else:
-                args = "{0} -m venv {1}".format(
-                    "python"
-                    if python_pth == "system"
-                    else PYENV_VENV_HOME.joinpath(python_pth).joinpath("bin/python"),
-                    project_venv,
-                ).split()
-            subprocess.check_call(args)
-            pyenv_venv.add(proj_name)
-        else:
-            status = status.format("Already present: No need")
+    already_venv = (
+        PYENV_VENV_HOME.joinpath(python_pth) if has_pyenv else VIRTUALENV_HOME.joinpath(python_pth)
+    )
+    if (
+        not python_pth.lower().startswith(("3.", "pypy3"))
+        and already_venv.joinpath("bin/python").exists()
+    ):
+        project_venv = already_venv
     else:
-        try:
-            import virtualenv
-        except ImportError:
-            status = status.format("NO VIRTUALENV: Error")
+        status = "{0} in python venv creation for project: {1}".format("{0}", proj_name)
+        if has_pyenv:
+            project_venv = PYENV_VENV_HOME.joinpath(proj_name)
+            if proj_name not in pyenv_versions:
+                if from_command:
+                    args = ["pyenv", "virtualenv", python_pth, proj_name]
+                else:
+                    args = "{0} -m venv {1}".format(
+                        "python"
+                        if python_pth == "system"
+                        else PYENV_VENV_HOME.joinpath(python_pth).joinpath("bin/python"),
+                        project_venv,
+                    ).split()
+                subprocess.check_call(args)
+            else:
+                status = status.format("Already present: No need")
         else:
-            if not VIRTUALENV_HOME.exists():
-                VIRTUALENV_HOME.mkdir()
-            project_venv = VIRTUALENV_HOME.joinpath(proj_name)
-            sys.argv = ["virtualenv", "--python={0}".format(python_pth), str(project_venv)]
-            virtualenv.main()
-            venvwrapper = importlib.find_spec("virtualenvwrapper")
-
+            try:
+                import virtualenv
+            except ImportError:
+                status = status.format("NO VIRTUALENV: Error")
+            else:
+                if not VIRTUALENV_HOME.exists():
+                    VIRTUALENV_HOME.mkdir()
+                project_venv = VIRTUALENV_HOME.joinpath(proj_name)
+                sys.argv = [
+                    "virtualenv",
+                    "--python={0}".format(
+                        "/usr/bin/python3" if python_pth == "system" else python_pth
+                    ),
+                    str(project_venv),
+                ]
+                virtualenv.main()
+                venvwrapper = importlib.find_spec("virtualenvwrapper")
+    pyenv_versions.add(project_venv.name)
     try:
-        if project_venv.exists():
-            st_pk = project_venv.glob("lib/python*/site-packages")
-            st_pk = next(st_pk) if st_pk else None
-            if st_pk and st_pk.is_dir():
-                st_pk = st_pk.joinpath("{0}.pth".format(proj_name))
-                write_proj_path(st_pk)
-            if venvwrapper is not None:
-                project_pth = project_venv.joinpath(".project")
-                if not project_pth.is_file():
-                    if st_pk and st_pk.is_file():
-                        shutil.copy2(str(st_pk), str(project_pth))
-                    else:
-                        write_proj_path(project_pth)
+        if project_venv.exists() and venvwrapper is not None:
+            project_pth = project_venv.joinpath(".project")
+            with project_pth.open("w") as of:
+                of.write(str(proj_path))
     except Exception:
         status = status.format("Error")
     else:
@@ -285,8 +291,8 @@ class PythonPorjectDialog(Gtk.Dialog):
 
         self.set_default_size(400, 200)
         box = self.get_content_area()
-        for index, name in enumerate(PYCODING_CNF):
-            if index == PYTHON_PTH_INDEX:
+        for name in PYCODING_CNF:
+            if name == PYTHON_PTH_LBL:
                 dir_label = Gtk.Label(_("Virtual Environment Source Python Path:"))
                 dir_label.set_alignment(0, 0.5)
                 if has_pyenv:
@@ -355,17 +361,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     formatter_name = DEFAULT_FORMATTER
 
     def on_document_lint(self, user_data, doc):
-        self.check_and_lint(doc)
-
-    def on_document_close(self, user_data, doc):
         Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
-
-    def check_and_lint(self, doc, check=True):
-        self.on_document_close(None, doc)
-        if check and not self.is_doc_python(doc):
+        if not self.is_doc_python(doc):
             return False
         Geany.keybindings_send_command(Geany.KeyGroupID.BUILD, Geany.KeyBindingID.BUILD_LINK)
-        return True if check else False
+        return True
 
     def on_documentation_item_click(self, item=None):
         if not is_pydoc_available:
@@ -417,7 +417,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             cur_doc.editor.insert_text_block("\n".join(template), insert_pos, -1, -1, False)
 
     def on_format_item_click(self, item=None):
-        cur_doc = Geany.Document.get_current()
+        cur_doc = Geany.document_get_current()
         self.format_code(cur_doc)
 
     def format_code(self, doc):
@@ -434,7 +434,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         project = self.geany_plugin.geany_data.app.project
         if project:
             style_paths.append(project.base_path)
-        self.on_document_close(None, doc)
+        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
         code_formatter, default_style_dir, exceptions = get_formatter(self.formatter_name)
         if code_formatter is None:
             return False
@@ -481,7 +481,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     def set_lint_signal_handler(self, geany_obj=None):
         if not geany_obj:
             geany_obj = self.geany_plugin.geany_data.object
-        signals = ("document-activate", "document-open", "document-save")
+        signals = ("document-activate", "document-save", "document-open")
         if self.enable_autolint:
             if self.lint_signals:
                 return
@@ -507,9 +507,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 geany_obj.disconnect(self.pyproj_signal)
 
     def on_pyproj_response(self, obj, proj_cnf_file):
-        settings = dict(
-            zip(PYCODING_CNF, [False, False, False, "system" if has_pyenv else "/usr/bin/python3"])
-        )
+        settings = dict(zip(PYCODING_CNF, [False, False, False, "system"]))
         for name in PYCODING_CNF:
             try:
                 if name == PYTHON_PTH_LBL:
@@ -599,7 +597,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             keys.add_keybinding("generate_python_docstring", dpc, self.document_item, 0, 0)
         o = geany_data.object
         self.jedi_handler = o.connect("editor-notify", self.on_editor_notify)
-        self.doc_close = o.connect("document-close", self.on_document_close)
+        self.doc_close = o.connect(
+            "document-close",
+            lambda x, y: Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER),
+        )
         # load startup config
         self.keyfile = GLib.KeyFile.new()
         if self.pycoding_config.is_file():
@@ -642,7 +643,8 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
 
     @staticmethod
     def scintilla_command(sci, sci_msg, sci_cmd, lparam, data):
-        sci.send_command(sci_cmd)
+        if sci_cmd:
+            sci.send_command(sci_cmd)
         if data:
             data = ctypes.c_char_p(data.encode("utf8"))
             tt = ctypes.cast(data, ctypes.c_void_p).value
@@ -662,8 +664,44 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             self.format_item.hide()
         return is_python
 
+    def call_jedi(self, doc_content, cur_doc=None, text=None, is_doc=True):
+        cur_doc = cur_doc or Geany.document_get_current()
+        fp = cur_doc.real_path or cur_doc.file_name
+        proj = self.geany_plugin.geany_data.app.project
+        path = append_project_venv(proj)
+        try:
+            project_dir = proj.base_path if proj else None
+            return jedi_complete(
+                doc_content,
+                fp=fp,
+                text=text,
+                sys_path=path,
+                project_dir=project_dir,
+                is_doc=is_doc,
+            )
+        except ValueError:
+            return
+
+    def get_calltip(self, editor, pos):
+        word_at_pos = editor.get_word_at_pos(pos, GEANY_WORDCHARS)
+        if not word_at_pos:
+            return
+        sci = editor.sci
+        doc_content = (sci.get_contents_range(0, pos) or "").rstrip()
+        if not doc_content:
+            return
+        data = self.call_jedi(doc_content, cur_doc=editor.document, text=word_at_pos, is_doc=False)
+        self.scintilla_command(
+            sci,
+            sci_cmd=GeanyScintilla.SCI_CALLTIPCANCEL,
+            sci_msg=GeanyScintilla.SCI_CALLTIPSHOW,
+            lparam=pos,
+            data=data,
+        )
+        sci.send_message(GeanyScintilla.SCI_CALLTIPSETHLT, 0, len(data))
+
     def on_editor_notify(self, g_obj, editor, nt):
-        cur_doc = editor.document or Geany.Document.get_current()
+        cur_doc = editor.document or Geany.document_get_current()
         if not (HAS_JEDI and self.is_doc_python(cur_doc)):
             return False
         sci = editor.sci
@@ -672,32 +710,50 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             return False
         if not Geany.highlighting_is_code_style(sci.get_lexer(), sci.get_style_at(pos - 2)):
             return False
-        if nt.nmhdr.code in (GeanyScintilla.SCN_CHARADDED, GeanyScintilla.SCN_AUTOCSELECTION):
-            self.complete_python(editor, nt.ch, getattr(nt, "text", None))
+        if nt.nmhdr.code in {
+            GeanyScintilla.SCN_CHARADDED,
+            GeanyScintilla.SCN_AUTOCSELECTION,
+            GeanyScintilla.SCN_DWELLSTART,
+            GeanyScintilla.SCN_DWELLEND,
+        }:
+            if nt.nmhdr.code in {GeanyScintilla.SCN_DWELLSTART, GeanyScintilla.SCN_DWELLEND}:
+                if nt.nmhdr.code == GeanyScintilla.SCN_DWELLEND:
+                    self.scintilla_command(
+                        sci,
+                        sci_cmd=GeanyScintilla.SCI_CALLTIPCANCEL,
+                        sci_msg=None,
+                        lparam=None,
+                        data=None,
+                    )
+                else:
+                    self.get_calltip(editor, nt.position)
+                return False
+            char = chr(nt.ch)
+            code_check = {
+                "\r",
+                "\n",
+                " ",
+                "\t",
+                "\v",
+                "\f",
+                ">",
+                "/",
+                "{",
+                "[",
+                '"',
+                "'",
+                "}",
+                ":",
+                "(",
+                ")",
+            }
+            if char in code_check:
+                return False
+            nt_text = getattr(nt, "text", None)
+            self.complete_python(editor, char, nt_text)
         return False
 
     def complete_python(self, editor, char, text=None):
-        char = chr(char)
-        code_check = (
-            "\r",
-            "\n",
-            " ",
-            "\t",
-            "\v",
-            "\f",
-            ">",
-            "/",
-            "(",
-            ")",
-            "{",
-            "[",
-            '"',
-            "'",
-            "}",
-            ":",
-        )
-        if char in code_check:
-            return
         sci = editor.sci
         pos = sci.get_current_position()
         col = sci.get_col_from_position(pos)
@@ -726,16 +782,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         elif not rootlen or (rootlen < 2 and not import_check):
             return
         cur_doc = editor.document
-        fp = cur_doc.real_path or cur_doc.file_name
-        proj = self.geany_plugin.geany_data.app.project
-        path = append_project_venv(proj.name if proj else None)
-        try:
-            project_dir = proj.base_path if proj else None
-            data = jedi_complete(
-                doc_content, fp=fp, text=text, sys_path=path, project_dir=project_dir
-            )
-        except ValueError:
-            return
+        data = self.call_jedi(doc_content, cur_doc=cur_doc, text=text)
         if not data:
             return
         if text is None:
@@ -747,15 +794,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 data=data,
             )
             return
-        can_doc = hasattr(Geany, "msgwin_msg_add_string") and text is not None
-        self.on_document_close(None, cur_doc)
+        can_doc = hasattr(Geany, "msgwin_compiler_add_string") and text is not None
+        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
         if not can_doc:
             return
-        data = "Doc:\n{0}".format(data)
-        Geany.msgwin_compiler_add_string(Geany.MsgColors.BLACK, data)
-        # FIXME: not working, dunno why
-        #  Geany.msgwin_msg_add_string(Geany.MsgColors.BLACK, line, cur_doc, data)
-        #  Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.MESSAGE, False)
+        Geany.msgwin_compiler_add_string(Geany.MsgColors.BLACK, "Doc:\n{0}".format(data))
 
     def on_configure_response(self, dlg, response_id, user_data):
         if response_id not in (Gtk.ResponseType.APPLY, Gtk.ResponseType.OK):
