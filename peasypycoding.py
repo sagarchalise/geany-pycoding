@@ -279,8 +279,45 @@ def run_project_create(proj_name, proj_path, python_cnf=None):
         future.add_done_callback(on_project_done)
 
 
+def get_pyproj_properties(settings):
+    box = Gtk.VBox(False, 0)
+    for name in PYCODING_CNF:
+        val = settings[name]
+        if name == PYTHON_PTH_LBL:
+            dir_label = Gtk.Label(_("Virtual Environment Source Python Path:"))
+            dir_label.set_alignment(0, 0.5)
+            if has_pyenv:
+                button = Gtk.ComboBoxText()
+                button.insert_text(0, val)
+                for nam in pyenv_versions:
+                    if not nam or val == nam:
+                        continue
+                    button.append_text(nam.strip())
+                button.set_active(0)
+            else:
+                button = Gtk.Button(val)
+                button.connect("clicked", PythonPorjectDialog.on_folder_clicked)
+            button.set_name(name)
+            box.add(dir_label)
+            box.add(button)
+        else:
+            button = Gtk.CheckButton(
+                _(
+                    "Is python project ?"
+                    if name == "is_pyproj"
+                    else "Make Virtual Environment ?"
+                    if name == "mkvenv"
+                    else "Make Template ?"
+                )
+            )
+            button.set_active(val)
+            button.set_name(name)
+            box.add(button)
+    return box
+
+
 class PythonPorjectDialog(Gtk.Dialog):
-    def __init__(self, parent, label_to_show=DIR_LABEL):
+    def __init__(self, parent, settings):
         Gtk.Dialog.__init__(
             self,
             _("Create Python Project"),
@@ -290,48 +327,19 @@ class PythonPorjectDialog(Gtk.Dialog):
         )
 
         self.set_default_size(400, 200)
-        box = self.get_content_area()
-        for name in PYCODING_CNF:
-            if name == PYTHON_PTH_LBL:
-                dir_label = Gtk.Label(_("Virtual Environment Source Python Path:"))
-                dir_label.set_alignment(0, 0.5)
-                if has_pyenv:
-                    button = Gtk.ComboBoxText()
-                    button.insert_text(0, label_to_show)
-                    for nam in pyenv_versions:
-                        if not nam or label_to_show == nam:
-                            continue
-                        button.append_text(nam.strip())
-                    button.set_active(0)
-                else:
-                    button = Gtk.Button(label_to_show)
-                    button.connect("clicked", self.on_folder_clicked)
-                button.set_name(name)
-                box.add(dir_label)
-                box.add(button)
-            else:
-                button = Gtk.CheckButton(
-                    _(
-                        "Is python project ?"
-                        if name == "is_pyproj"
-                        else "Make Virtual Environment ?"
-                        if name == "mkvenv"
-                        else "Make Template ?"
-                    )
-                )
-                button.set_active(True)
-                button.set_name(name)
-                box.add(button)
+        box = get_pyproj_properties(settings)
+        self.set_content_area(box)
         self.show_all()
 
-    def on_folder_clicked(self, widget):
+    @staticmethod
+    def on_folder_clicked(widget, parent=None):
         filename = widget.get_label()
         pth = Path(filename)
         if not pth.is_file():
             filename = DIR_LABEL
         dialog = Gtk.FileChooserDialog(
             DIR_LABEL,
-            self,
+            parent,
             Gtk.FileChooserAction.OPEN,
             (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, _("Select"), Gtk.ResponseType.OK),
         )
@@ -359,6 +367,8 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     DEFAULT_LINE_WIDTH = 79
     default_pth_dir = None
     formatter_name = DEFAULT_FORMATTER
+    properties_tab = None
+    settings = None
 
     def on_document_lint(self, user_data, doc):
         Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
@@ -498,66 +508,79 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     def set_pyproj_signal_handler(self, geany_obj=None):
         if not geany_obj:
             geany_obj = self.geany_plugin.geany_data.object
+        self.pyproj_signal = []
         if self.enable_venv_project:
             if self.pyproj_signal:
                 return
-            self.pyproj_signal = geany_obj.connect("project-save", self.on_pyproj_response)
+            self.pyproj_signal.append(geany_obj.connect("project-open", self.on_pyproj_response))
+            self.pyproj_signal.append(geany_obj.connect("project-save", self.on_pyproj_response))
+            self.pyproj_signal.append(geany_obj.connect("project-close", self.on_pyproj_close))
+            self.pyproj_signal.append(
+                geany_obj.connect("project-dialog-close", self.on_pyproj_close)
+            )
+            self.pyproj_signal.append(
+                geany_obj.connect("project-dialog-confirmed", self.on_pyproj_confirmed)
+            )
+            self.pyproj_signal.append(
+                geany_obj.connect("project-dialog-open", self.on_pyproj_open)
+            )
         else:
             if self.pyproj_signal:
-                geany_obj.disconnect(self.pyproj_signal)
+                for sig in self.pyproj_signal:
+                    geany_obj.disconnect(sig)
+
+    def on_pyproj_close(self, obj, gtk_widget=None):
+        if gtk_widget is not None:
+            if self.properties_tab:
+                self.set_proj_settings(self.properties_tab.get_children())
+                self.properties_tab.destroy()
+                self.properties_tab = None
+        else:
+            self.settings = None
+
+    def on_pyproj_open(self, obj, gtk_widget):
+        self.properties_tab = get_pyproj_properties(self.settings)
+        gtk_widget.append_page(self.properties_tab, Gtk.Label("Python"))
+        gtk_widget.show_all()
+
+    def on_pyproj_confirmed(self, obj, gtk_widget):
+        self.set_proj_settings(gtk_widget.get_children())
 
     def on_pyproj_response(self, obj, proj_cnf_file):
-        settings = dict(zip(PYCODING_CNF, [False, False, False, "system"]))
-        for name in PYCODING_CNF:
-            try:
-                if name == PYTHON_PTH_LBL:
-                    setting = proj_cnf_file.get_string(NAME, name)
-                    if not has_pyenv:
-                        pth = Path(setting)
-                        if pth.is_file():
-                            setting = str(pth)
-                    settings[name] = setting
-                else:
-                    settings[name] = proj_cnf_file.get_boolean(NAME, name)
-            except (GLib.Error, TypeError):
-                show_dlg = True
-                break
-        else:  # nobreak
+        settings_read = True
+        if not self.settings:
+            self.settings = dict(zip(PYCODING_CNF, [False, False, False, "system"]))
+            settings_read = False
+        if not settings_read:
+            for name in PYCODING_CNF:
+                try:
+                    if name == PYTHON_PTH_LBL:
+                        setting = proj_cnf_file.get_string(NAME, name)
+                        if not has_pyenv:
+                            pth = Path(setting)
+                            if pth.is_file():
+                                setting = str(pth)
+                        self.settings[name] = setting
+                    else:
+                        self.settings[name] = proj_cnf_file.get_boolean(NAME, name)
+                except (GLib.Error, TypeError):
+                    show_dlg = True
+                    break
+            else:  # nobreak
+                show_dlg = False
+        else:
             show_dlg = False
+        childrens = []
         if show_dlg:
             dlg = PythonPorjectDialog(
-                self.geany_plugin.geany_data.main_widgets.window,
-                label_to_show=settings[PYTHON_PTH_LBL],
+                self.geany_plugin.geany_data.main_widgets.window, self.settings,
             )
             ok = dlg.run()
             if ok in (Gtk.ResponseType.APPLY, Gtk.ResponseType.OK):
-                for child in dlg.get_content_area():
-                    is_chkbtn = isinstance(child, Gtk.CheckButton)
-                    is_btn = (
-                        isinstance(child, Gtk.ComboBoxText)
-                        if has_pyenv
-                        else isinstance(child, Gtk.Button)
-                    )
-                    if not (is_chkbtn or is_btn):
-                        continue
-                    if is_chkbtn:
-                        settings[child.get_name()] = child.get_active()
-                    elif is_btn:
-                        if has_pyenv:
-                            pth = child.get_active_text()
-                        else:
-                            try:
-                                pth = Path(child.get_label())
-                            except TypeError:
-                                pass
-                            else:
-                                if pth.is_file():
-                                    pth = str(pth)
-                                else:
-                                    pth = ""
-                        settings[child.get_name()] = pth
-            dlg.destroy()
-        for name, value in settings.items():
+                childrens = dlg.get_contenct_area()
+                dlg.destroy()
+        self.set_proj_settings(childrens)
+        for name, value in self.settings.items():
             if name == PYTHON_PTH_LBL:
                 proj_cnf_file.set_string(NAME, name, str(value))
             else:
@@ -568,10 +591,37 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             pattern_list = []
         proj_name = self.geany_plugin.geany_data.app.project.name
         base_path = self.geany_plugin.geany_data.app.project.base_path
-        run_project_create(proj_name, base_path, settings)
-        if settings.get(PYCODING_CNF[0]) and "*.py" not in pattern_list:
+        run_project_create(proj_name, base_path, self.settings)
+        if self.settings.get(PYCODING_CNF[0]) and "*.py" not in pattern_list:
             pattern_list.append("*.py")
             proj_cnf_file.set_string_list("project", "file_patterns", pattern_list)
+
+    def set_proj_settings(self, childrens):
+        if not childrens:
+            return
+        for child in childrens:
+            is_chkbtn = isinstance(child, Gtk.CheckButton)
+            is_btn = (
+                isinstance(child, Gtk.ComboBoxText) if has_pyenv else isinstance(child, Gtk.Button)
+            )
+            if not (is_chkbtn or is_btn):
+                continue
+            if is_chkbtn:
+                self.settings[child.get_name()] = child.get_active()
+            elif is_btn:
+                if has_pyenv:
+                    pth = child.get_active_text()
+                else:
+                    try:
+                        pth = Path(child.get_label())
+                    except TypeError:
+                        pass
+                    else:
+                        if pth.is_file():
+                            pth = str(pth)
+                        else:
+                            pth = ""
+                self.settings[child.get_name()] = pth
 
     def do_enable(self):
         geany_data = self.geany_plugin.geany_data
