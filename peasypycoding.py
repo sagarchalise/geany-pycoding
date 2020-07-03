@@ -3,7 +3,9 @@ import importlib
 import site
 import subprocess
 import sys
+import os
 import io
+import re
 import tokenize
 import configparser
 import collections
@@ -77,7 +79,9 @@ def get_patched_checker(name=DEFAULT_LINTER):
     def get_severity(err_code):
         if err_code.startswith(("E999", "E901", "E902", "E113", "F82")):
             key = "fatal"
-        elif err_code.startswith(("W", "F402", "F403", "F405", "E722", "E112", "F8", "F9")):
+        elif err_code.startswith(
+            ("W", "F402", "F403", "F405", "E722", "E112", "F812", "F9", "F82", "F83")
+        ):
             key = "warning"
         elif err_code.startswith("E9"):
             key = "error"
@@ -620,6 +624,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     lint_signals = None
     pyproj_signal = None
     format_item = None
+    pytest_item = None
     document_item = None
     docstring_name = "google"
     DEFAULT_LINE_WIDTH = 79
@@ -629,14 +634,20 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     settings = None
     linter_name = DEFAULT_LINTER
     enable_jedi = True
+    line_compile = re.compile(r"(.*):(\d+):")
 
     def on_document_lint(self, user_data, doc):
+        sci = doc.editor.sci
+        sci.send_message(
+            GeanyScintilla.SCI_MARKERDELETEALL,
+            GeanyScintilla.SC_MARK_BACKGROUND,
+            GeanyScintilla.SC_MARK_BACKGROUND,
+        )
         Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
         Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.MESSAGE)
         if not self.is_doc_python(doc):
             return False
         if self.enable_annotate_lint:
-            sci = doc.editor.sci
             contents = sci.get_contents(-1)
             sci.send_message(
                 GeanyScintilla.SCI_ANNOTATIONSETVISIBLE,
@@ -756,7 +767,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 format_text, formatted = code_formatter(code_contents, style_config=style)
             except exceptions as error:
                 formatted = None
-                Geany.msgwin_msg_add_string(Geany.MsgColors.RED, line, doc, str(error))
+                Geany.msgwin_msg_add_string(Geany.MsgColors.DARK_RED, line, doc, str(error))
                 Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.MESSAGE, False)
         else:
             format_text, formatted = code_formatter(code_contents, style_config=style)
@@ -917,13 +928,83 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                             pth = ""
                 self.settings[child.get_name()] = pth
 
+    def on_pytest_click(self, item=None):
+        cur_doc = Geany.document_get_current()
+        if not self.is_doc_python(cur_doc):
+            return
+        proj = self.geany_plugin.geany_data.app.project
+        append_project_venv(proj)
+        try:
+            import pytest
+        except ImportError:
+            return
+        else:
+            from py.io import StdCapture
+        fp = cur_doc.real_path or cur_doc.file_name
+        if proj:
+            os.chdir(proj.base_path)
+            fp = fp.replace(proj.base_path, ".")
+        else:
+            fp = cur_doc.file_name
+        capture = StdCapture()
+        pytest.main(["-p", "no:sugar" "-q", fp])
+        std, err = capture.reset()
+        if not (std or err):
+            return
+        err_data = std.strip() + "\n" + err.strip()
+        err_lines = set()
+        color = Geany.MsgColors.BLACK
+        msgs = []
+        ignore_count = 0
+        for lines in err_data.split("\n"):
+            if ignore_count < 3:
+                ignore_count += int(lines.startswith("="))
+                if ignore_count < 2:
+                    continue
+            if "FAILED" in lines:
+                color = Geany.MsgColors.RED
+            msgs.append(lines)
+            if os.path.basename(fp) not in lines:
+                continue
+            reg_data = self.line_compile.search(lines)
+            if not reg_data:
+                continue
+            line = reg_data.group(2)
+            try:
+                line = int(line)
+            except (ValueError, TypeError):
+                continue
+            else:
+                err_lines.add(line)
+
+        sci = cur_doc.editor.sci
+        sci.send_message(
+            GeanyScintilla.SCI_MARKERDELETEALL,
+            GeanyScintilla.SC_MARK_BACKGROUND,
+            GeanyScintilla.SC_MARK_BACKGROUND,
+        )
+        sci.send_message(
+            GeanyScintilla.SCI_MARKERDEFINE,
+            GeanyScintilla.SC_MARK_BACKGROUND,
+            GeanyScintilla.SC_MARK_BACKGROUND,
+        )
+        sci.send_message(
+            GeanyScintilla.SCI_MARKERSETALPHA, GeanyScintilla.SC_MARK_BACKGROUND, 40,
+        )
+        for line in err_lines:
+            sci.set_marker_at_line(line - 1, GeanyScintilla.SC_MARK_BACKGROUND)
+        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
+        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.MESSAGE)
+        Geany.msgwin_compiler_add_string(color, "\n".join(msgs))
+        Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.COMPILER, False)
+
     def do_enable(self):
         geany_data = self.geany_plugin.geany_data
         self.pycoding_config = Path(geany_data.app.configdir).joinpath(
             "plugins", "{0}.conf".format(NAME)
         )
         keys = self.add_key_group(
-            NAME, 1 + int(bool(self.formatter_name)) + int(is_pydoc_available)
+            NAME, 2 + int(bool(self.formatter_name)) + int(is_pydoc_available)
         )
         self.DEFAULT_LINE_WIDTH = max(
             geany_data.editor_prefs.long_line_column, geany_data.editor_prefs.line_break_column
@@ -939,6 +1020,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             self.document_item.connect("activate", self.on_documentation_item_click)
             geany_data.main_widgets.editor_menu.append(self.document_item)
             keys.add_keybinding("generate_python_docstring", dpc, self.document_item, 0, 0)
+        rpf = _("Run pytest on Current File")
+        self.pytest_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, rpf)
+        self.pytest_item.connect("activate", self.on_pytest_click)
+        geany_data.main_widgets.editor_menu.append(self.pytest_item)
+        keys.add_keybinding("test_python_file", fpc, self.pytest_item, 0, 0)
         o = geany_data.object
         self.jedi_handler = o.connect("editor-notify", self.on_editor_notify)
         self.doc_close = o.connect(
@@ -984,6 +1070,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             geany_data.main_widgets.editor_menu.remove(self.document_item)
             self.document_item.destroy()
             self.document_item = None
+        if self.pytest_item:
+            geany_data.main_widgets.editor_menu.remove(self.pytest_item)
+            self.pytest_item.destroy()
+            self.pytest_item = None
 
     @staticmethod
     def scintilla_command(sci, sci_msg, sci_cmd, lparam, data):
@@ -1003,9 +1093,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if is_python:
             self.document_item.show()
             self.format_item.show()
+            self.pytest_item.show()
         else:
             self.document_item.hide()
             self.format_item.hide()
+            self.pytest_item.hide()
         return is_python
 
     def call_jedi(self, doc_content, cur_doc=None, text=None, is_doc=True):
