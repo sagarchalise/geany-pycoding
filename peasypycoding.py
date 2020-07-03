@@ -3,7 +3,11 @@ import importlib
 import site
 import subprocess
 import sys
+import io
+import tokenize
 import configparser
+import collections
+import itertools
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -23,12 +27,25 @@ _ = Peasy.gettext
 GEANY_WORDCHARS = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 ENABLE_CONFIGS = {
-    "enable_venv_project": (_("Initialize Python Project."), _("Requires virtualenv or venv.")),
-    "enable_jedi": (_("Jedi Completion for Python."), _("Requires Jedi")),
-    "enable_autolint": (_("Enable auto lint on save."), _("Requires linting config in build.")),
+    "enable_venv_project": (
+        _("Initialize Python Project Properties."),
+        _("Requires pyenv, virtualenv or venv."),
+    ),
+    "enable_jedi": (
+        _("Jedi Completion/Documentation/Signatures for Python."),
+        _("Requires jedi."),
+    ),
+    "enable_autolint": (
+        _("Enable auto lint on save."),
+        _("Requires linting config in build or linter for annotation."),
+    ),
+    "enable_annotate_lint": (
+        _("Enable Annotation on lint."),
+        _("Requires a linter and will disable build linting."),
+    ),
     "enable_autoformat": (
         _("Enable auto format on save."),
-        _("Requires formatter such as black,yapf etc"),
+        _("Requires formatter such as black, yapf etc."),
     ),
 }
 
@@ -40,13 +57,252 @@ def is_mod_available(modname):
         return False
 
 
+DEFAULT_LINTER = "flake8"
+LINTERS = {DEFAULT_LINTER, "pylint", "pycodestyle", "pyflakes"}
+
+mapped_key = {
+    "warning": 15,
+    "error": 13,
+    "convention": 12,
+    "refactor": 10,
+    "fatal": 13,
+}
+
+
+def get_patched_checker(name=DEFAULT_LINTER):
+    is_linter_available = is_mod_available(name)
+    if not is_linter_available:
+        raise ImportError("No linter: {0}".format(name))
+
+    def get_severity(err_code):
+        if err_code.startswith(("E999", "E901", "E902", "E113", "F82")):
+            key = "fatal"
+        elif err_code.startswith(("W", "F402", "F403", "F405", "E722", "E112", "F8", "F9")):
+            key = "warning"
+        elif err_code.startswith("E9"):
+            key = "error"
+        elif err_code.startswith("VNE"):
+            key = "refactor"
+        elif err_code not in mapped_key:
+            key = "convention"
+        else:
+            key = err_code
+        return key
+
+    def read_file_line(fd):
+        try:
+            (coding, lines) = tokenize.detect_encoding(fd.readline)
+            textfd = io.TextIOWrapper(fd, coding, line_buffering=True)
+            return [l.decode(coding) for l in lines] + textfd.readlines()
+        except (LookupError, SyntaxError, UnicodeError):
+            return fd.readlines()
+
+    if name == "flake8":
+        from flake8.api.legacy import get_style_guide
+        from flake8.checker import FileChecker, processor
+
+        class PatchedFileChecker(FileChecker):
+            def __init__(self, filename, checks, options, file_lines=None):
+                self.file_lines = file_lines
+                super().__init__(filename, checks, options)
+
+            def _make_processor(self):
+                return processor.FileProcessor(self.filename, self.options, lines=self.file_lines)
+
+        sg = get_style_guide()
+
+        def check_and_get_results(filename, file_content=None, line_length=79):
+            py_file = io.BytesIO(file_content.encode("utf8"))
+            flake8_mngr = sg._file_checker_manager
+            flake8_mngr.options.max_line_length = line_length
+            checks = flake8_mngr.checks.to_dictionary()
+            file_chk = PatchedFileChecker(
+                filename, checks, flake8_mngr.options, file_lines=read_file_line(py_file)
+            )
+            file_chk.run_checks()
+            g = sg._application.guide
+            formatter = g.formatter
+            formatter.write = lambda x, y: None
+            for result in file_chk.results:
+                err_code, line, col, msg, code_str = result
+                if g.handle_error(
+                    code=err_code,
+                    filename=filename,
+                    line_number=line,
+                    column_number=col,
+                    text=msg,
+                    physical_line=code_str,
+                ):
+                    severity = get_severity(err_code)
+                    yield (severity, line, col, msg)
+
+        return check_and_get_results
+    elif name == "pycodestyle":
+        from pycodestyle import Checker
+
+        def check_and_get_results(filename, file_content=None, line_length=79):
+            py_file = io.BytesIO(file_content.encode("utf8"))
+            chk = Checker(filename, lines=read_file_line(py_file))
+            chk.max_line_length = line_length
+            results = chk.check_all()
+            results = chk.report._deferred_print
+            for result in results:
+                line, col, err_code, msg, smry = result
+                severity = get_severity(err_code)
+                yield (severity, line, col, msg)
+
+        return check_and_get_results
+    elif name == "pyflakes":
+        from pyflakes.api import check
+        from pyflakes.reporter import Reporter
+
+        class PyFlakeReporter(Reporter):
+            def __init__(self):
+                self.errors = []
+
+            def unexpectedError(self, filename, msg):
+                self.errors.append(("E9", 1, 1, msg))
+
+            def syntaxError(self, filename, msg, lineno, offset, text):
+                self.errors.append(("E9", lineno, offset, msg))
+
+            def flake(self, message):
+                self.errors.append(
+                    ("", message.lineno, message.col, message.message % message.message_args)
+                )
+
+        def check_and_get_results(filename, file_content=None, line_length=79):
+            rprter = PyFlakeReporter()
+            check(file_content, filename, reporter=rprter)
+            for result in rprter.errors:
+                err_code, line, col, msg = result
+                severity = get_severity(err_code)
+                yield (severity, line, col, msg)
+
+        return check_and_get_results
+    elif name == "pylint":
+        import os
+        from pylint.lint import PyLinter
+        from pylint import utils
+        from pylint import interfaces
+        from astroid import MANAGER, builder
+        from pylint import reporters
+
+        bd = builder.AstroidBuilder(MANAGER)
+
+        class PatchedPyLinter(PyLinter):
+            def check(self, filename, file_content):
+                # initialize msgs_state now that all messages have been registered into
+                # the store
+                for msg in self.msgs_store.messages:
+                    if not msg.may_be_emitted():
+                        self._msgs_state[msg.msgid] = False
+                basename = (
+                    os.path.splitext(os.path.basename(filename))[0] if filename else "untitled"
+                )
+                walker = utils.PyLintASTWalker(self)
+                self.config.reports = True
+                _checkers = self.prepare_checkers()
+                tokencheckers = [
+                    c
+                    for c in _checkers
+                    if interfaces.implements(c, interfaces.ITokenChecker) and c is not self
+                ]
+                rawcheckers = [
+                    c for c in _checkers if interfaces.implements(c, interfaces.IRawChecker)
+                ]
+                # notify global begin
+                for checker in _checkers:
+                    checker.open()
+                    if interfaces.implements(checker, interfaces.IAstroidChecker):
+                        walker.add_checker(checker)
+                self.set_current_module(basename, filename)
+                ast_node = bd.string_build(file_content, filename, basename)
+                self.file_state = utils.FileState(basename)
+                self._ignore_file = False
+                # fix the current file (if the source file was not available or
+                # if it's actually a c extension)
+                self.current_file = ast_node.file  # pylint: disable=maybe-no-member
+                self.check_astroid_module(ast_node, walker, rawcheckers, tokencheckers)
+                # warn about spurious inline messages handling
+                spurious_messages = self.file_state.iter_spurious_suppression_messages(
+                    self.msgs_store
+                )
+                for msgid, line, args in spurious_messages:
+                    self.add_message(msgid, line, None, args)
+                # notify global end
+                self.stats["statement"] = walker.nbstatements
+                for checker in reversed(_checkers):
+                    checker.close()
+
+        def check_and_get_results(filename, file_content=None, line_length=79):
+            if not isinstance(file_content, str):
+                file_content = file_content.decode("utf8") if file_content else ""
+            if not filename:
+                filename = ""
+            linter = PatchedPyLinter()
+            linter.load_default_plugins()
+            rp = reporters.json.JSONReporter()
+            linter.set_reporter(rp)
+            linter.check(filename, file_content)
+            for msg in rp.messages:
+                yield get_severity(msg["type"]), msg["line"], msg["column"], "[{0}] {1}".format(
+                    msg["message-id"], msg["message"]
+                )
+
+        return check_and_get_results
+
+
+def check_python_code(filename, file_content, line_length, linter=DEFAULT_LINTER):
+    check_and_get_results = get_patched_checker(name=linter)
+    results = collections.defaultdict(dict)
+    for result in check_and_get_results(filename, file_content, line_length):
+        severity, line, _, msg = result
+        start_line = max(line - 1, 0)
+        results[start_line][severity] = msg
+    for line, vals in results.items():
+        if len(vals) > 1:
+            severity = ""
+            msg = ""
+            for sev, message in vals.items():
+                if not severity:
+                    msg += message
+                else:
+                    msg += "\n" + message
+                if sev in {"error", "fatal"}:
+                    severity = sev
+                elif sev == "warning":
+                    severity = sev
+                elif not severity:
+                    severity = sev
+        else:
+            for severity, msg in vals.items():
+                break
+        yield (severity, line, msg)
+
+
 DEFAULT_FORMATTER = "black"
-DEFAULTS = {"docstring_name": "google", "formatter_name": DEFAULT_FORMATTER}
 FORMATTER_TYPES = {DEFAULT_FORMATTER, "autopep8", "yapf"}
+
+DEFAULTS = {
+    "formatter_name": {
+        "label": "Code Formatter:",
+        "default": DEFAULT_FORMATTER,
+        "options": FORMATTER_TYPES,
+    },
+    "docstring_name": {"label": "Format for docstrings:", "default": "google", "options": []},
+    "linter_name": {
+        "label": "Code Linter for annotation:",
+        "default": DEFAULT_LINTER,
+        "options": LINTERS,
+    },
+}
 
 is_pydoc_available = is_mod_available("pydocstring")
 if is_pydoc_available:
     import pydocstring
+
+    DEFAULTS["docstring_name"]["options"] = pydocstring.formatters._formatter_map
 
 
 def get_formatter(name=DEFAULT_FORMATTER):
@@ -97,14 +353,16 @@ if PYENV_HOME.exists():
     has_pyenv = True
     try:
         pyenv_versions = {
-            p.strip() if "system" not in p else "system"
-            for p in subprocess.check_output(["pyenv", "versions"]).decode("utf8").split("\n")
+            p.strip()
+            for p in subprocess.check_output(["pyenv", "versions", "--bare", "--skip-aliases"])
+            .decode("utf8")
+            .split("\n")
         }
         from_command = True
     except (subprocess.CalledProcessError, FileNotFoundError):
         pyenv_versions = {d.name for d in PYENV_VENV_HOME.iterdir() if d.is_dir()}
-        pyenv_versions.add("system")
         from_command = False
+    pyenv_versions.add("system")
 else:
     if VIRTUALENV_HOME.exists():
         pyenv_versions = {d.name for d in VIRTUALENV_HOME.iterdir() if d.is_dir()}
@@ -154,6 +412,7 @@ if HAS_JEDI:
             else:
                 data += "?1"
             if count == stop_len:
+                data += "..."
                 break
         return data
 
@@ -357,7 +616,6 @@ class PythonPorjectDialog(Gtk.Dialog):
 class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     __gtype_name__ = NAME.title()
     pycoding_config = None
-    completion_words = None
     format_signal = None
     lint_signals = None
     pyproj_signal = None
@@ -369,12 +627,46 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     formatter_name = DEFAULT_FORMATTER
     properties_tab = None
     settings = None
+    linter_name = DEFAULT_LINTER
+    enable_jedi = True
 
     def on_document_lint(self, user_data, doc):
         Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
+        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.MESSAGE)
         if not self.is_doc_python(doc):
             return False
-        Geany.keybindings_send_command(Geany.KeyGroupID.BUILD, Geany.KeyBindingID.BUILD_LINK)
+        if self.enable_annotate_lint:
+            sci = doc.editor.sci
+            contents = sci.get_contents(-1)
+            sci.send_message(
+                GeanyScintilla.SCI_ANNOTATIONSETVISIBLE,
+                GeanyScintilla.ANNOTATION_BOXED,
+                GeanyScintilla.ANNOTATION_INDENTED,
+            )
+            if contents:
+                fp = doc.real_path or doc.file_name
+                try:
+                    checks = list(
+                        check_python_code(
+                            fp, contents, self.DEFAULT_LINE_WIDTH, linter=self.linter_name
+                        )
+                    )
+                except ImportError as err:
+                    checks = [["fatal", 0, str(err)]]
+                sci.send_command(GeanyScintilla.SCI_ANNOTATIONCLEARALL)
+                for severity, line, msg in checks:
+                    self.scintilla_command(
+                        sci,
+                        sci_cmd=None,
+                        sci_msg=GeanyScintilla.SCI_ANNOTATIONSETTEXT,
+                        lparam=line,
+                        data=msg,
+                    )
+                    sci.send_message(
+                        GeanyScintilla.SCI_ANNOTATIONSETSTYLE, line, mapped_key[severity]
+                    )
+        else:
+            Geany.keybindings_send_command(Geany.KeyGroupID.BUILD, Geany.KeyBindingID.BUILD_LINK)
         return True
 
     def on_documentation_item_click(self, item=None):
@@ -434,7 +726,8 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if not (self.formatter_name and self.is_doc_python(doc)):
             return False
         sci = doc.editor.sci
-        code_contents = sci.get_contents(-1)
+        line = -1
+        code_contents = sci.get_contents(line)
         if not code_contents:
             return False
         try:
@@ -444,7 +737,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         project = self.geany_plugin.geany_data.app.project
         if project:
             style_paths.append(project.base_path)
-        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
+        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.MESSAGE)
         code_formatter, default_style_dir, exceptions = get_formatter(self.formatter_name)
         if code_formatter is None:
             return False
@@ -463,7 +756,8 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 format_text, formatted = code_formatter(code_contents, style_config=style)
             except exceptions as error:
                 formatted = None
-                Geany.msgwin_compiler_add_string(Geany.MsgColors.RED, str(error))
+                Geany.msgwin_msg_add_string(Geany.MsgColors.RED, line, doc, str(error))
+                Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.MESSAGE, False)
         else:
             format_text, formatted = code_formatter(code_contents, style_config=style)
         if formatted:
@@ -492,7 +786,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if not geany_obj:
             geany_obj = self.geany_plugin.geany_data.object
         signals = ("document-activate", "document-save", "document-open")
-        if self.enable_autolint:
+        if self.enable_autolint or self.enable_annotate_lint:
             if self.lint_signals:
                 return
             self.lint_signals = []
@@ -660,11 +954,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 setattr(self, cnf, self.keyfile.get_boolean(NAME, cnf[0]))
             except GLib.Error:
                 setattr(self, cnf, True)
-        for name in {"docstring_name", "formatter_name"}:
+        for name in DEFAULTS:
             try:
                 setattr(self, name, self.keyfile.get_string(NAME, name).lower())
             except GLib.Error:
-                setattr(self, name, DEFAULTS[name])
+                setattr(self, name, DEFAULTS[name].get("default"))
         if self.enable_venv_project:
             self.set_pyproj_signal_handler(o)
         self.set_lint_signal_handler(o)
@@ -728,14 +1022,18 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 sys_path=path,
                 project_dir=project_dir,
                 is_doc=is_doc,
+                stop_len=self.geany_plugin.geany_data.editor_prefs.autocompletion_max_entries,
             )
         except ValueError:
             return
 
-    def get_calltip(self, editor, pos):
-        word_at_pos = editor.get_word_at_pos(pos, GEANY_WORDCHARS)
-        if not word_at_pos:
-            return
+    def get_calltip(self, editor, pos, text=None):
+        if text is None:
+            word_at_pos = editor.get_word_at_pos(pos, GEANY_WORDCHARS)
+            if not word_at_pos:
+                return
+        else:
+            word_at_pos = text
         sci = editor.sci
         doc_content = (sci.get_contents_range(0, pos) or "").rstrip()
         if not doc_content:
@@ -752,7 +1050,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
 
     def on_editor_notify(self, g_obj, editor, nt):
         cur_doc = editor.document or Geany.document_get_current()
-        if not (HAS_JEDI and self.is_doc_python(cur_doc)):
+        if not (HAS_JEDI and self.is_doc_python(cur_doc) and self.enable_jedi):
             return False
         sci = editor.sci
         pos = sci.get_current_position()
@@ -766,7 +1064,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             GeanyScintilla.SCN_DWELLSTART,
             GeanyScintilla.SCN_DWELLEND,
         }:
-            if nt.nmhdr.code in {GeanyScintilla.SCN_DWELLSTART, GeanyScintilla.SCN_DWELLEND}:
+            if nt.nmhdr.code in {
+                GeanyScintilla.SCN_DWELLSTART,
+                GeanyScintilla.SCN_DWELLEND,
+            }:
                 if nt.nmhdr.code == GeanyScintilla.SCN_DWELLEND:
                     self.scintilla_command(
                         sci,
@@ -833,8 +1134,6 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             return
         cur_doc = editor.document
         data = self.call_jedi(doc_content, cur_doc=cur_doc, text=text)
-        if not data:
-            return
         if text is None:
             self.scintilla_command(
                 sci,
@@ -846,9 +1145,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             return
         can_doc = hasattr(Geany, "msgwin_compiler_add_string") and text is not None
         Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
-        if not can_doc:
+        Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.MESSAGE)
+        if not (can_doc and data):
             return
         Geany.msgwin_compiler_add_string(Geany.MsgColors.BLACK, "Doc:\n{0}".format(data))
+        Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.COMPILER, False)
 
     def on_configure_response(self, dlg, response_id, user_data):
         if response_id not in (Gtk.ResponseType.APPLY, Gtk.ResponseType.OK):
@@ -865,14 +1166,28 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 cnf_val = child.get_active()
             name = child.get_name()
             setattr(self, name, cnf_val)
-            if name not in {"docstring_name", "formatter_name"}:
-                self.keyfile.set_boolean(NAME, name, cnf_val)
-            else:
+            if name in DEFAULTS:
                 self.keyfile.set_string(NAME, name, cnf_val)
+            else:
+                self.keyfile.set_boolean(NAME, name, cnf_val)
         self.keyfile.save_to_file(conf_file)
         obj = self.geany_plugin.geany_data.object
         self.set_lint_signal_handler(obj)
         self.set_format_signal_handler(obj)
+
+    @staticmethod
+    def create_combobox(name, value=None):
+        data = DEFAULTS.get(name)
+        label = Gtk.Label(data["label"])
+        combo = Gtk.ComboBoxText()
+        combo.set_name(name)
+        for c_name in data["options"]:
+            if c_name == value:
+                combo.insert_text(0, value)
+            else:
+                combo.append_text(c_name)
+        combo.set_active(0)
+        return label, combo
 
     def do_configure(self, dialog):
         align = Gtk.Alignment.new(0, 0, 1, 0)
@@ -890,28 +1205,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             button.set_name(name)
             button.set_active(cnf_val)
             vbox.add(button)
-        label = Gtk.Label("Code Formatter:")
-        vbox.add(label)
-        combo = Gtk.ComboBoxText()
-        combo.set_name("formatter_name")
-        for formatter_name in FORMATTER_TYPES:
-            if formatter_name == self.formatter_name:
-                combo.insert_text(0, formatter_name)
-            else:
-                combo.append_text(formatter_name)
-        combo.set_active(0)
-        vbox.add(combo)
-        label = Gtk.Label("Format for docstring:")
-        vbox.add(label)
-        combo = Gtk.ComboBoxText()
-        combo.set_name("docstring_name")
-        for docstring_name in pydocstring.formatters._formatter_map:
-            if docstring_name == self.docstring_name:
-                combo.insert_text(0, docstring_name)
-            else:
-                combo.append_text(docstring_name)
-        combo.set_active(0)
-        vbox.add(combo)
+        for name in DEFAULTS:
+            value = getattr(self, name)
+            label, combo = self.create_combobox(name, value)
+            vbox.add(label)
+            vbox.add(combo)
         align.add(vbox)
         dialog.connect("response", self.on_configure_response, vbox)
         return align

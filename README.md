@@ -3,17 +3,23 @@
 
 #### Comes with:
 
- * Python Files Linting based on [this helper](https://wiki.geany.org/howtos/check_python_code). Runs automatically on open/activation of python files if configured.
+ * Linting
+    - Either lint based on [this helper](https://wiki.geany.org/howtos/check_python_code) or from program which annotates in editor itself.
+    - Run automatically on open/activation of python files if configured. Build linting will be dissabled on annotation.
  * Code Formatting:
-    - Can use [black](https://black.readthedocs.io/en/stable/)(**prioritized**) or `autopep8` or `yapf` whichever is installed.
+    - Can use [black](https://black.readthedocs.io/en/stable/) or `autopep8` or `yapf`. Can be chosen from settings.
     - Configurable through keybinding as well as can be run automatically during saves. Is available in context menu as well.
-* Complete Python Code Based on [jedi](https://jedi.readthedocs.io/en/latest/).
+* Complete Python Code Based on [jedi](https://jedi.readthedocs.io/en/latest/). 
+* Show docstring when autocomplete is completed on compiler window.
+* Show `calltip` of signatures if available when hovering over with mouse.
 * Genrate docstring on `class` or `def` definition from menu if `pydocstring` installed. **OPTIONAL** 
 
 #### A python project initializer highly opinionated.
 * Either `pyenv`/ `virtualenv`/ `virtualenvwrapper` needs to be installed.
 * Creates a virtualenvironment for python projects during project creation looking inside `$HOME/.virtualenvs/` or `pyenv` setup.
 * Create a folder in project name inside project base path.
+* Configurable through project properties.
+* Will use project base path and venv paths for code complete.
       
  
 #### Requirements:
