@@ -351,9 +351,9 @@ def get_formatter(name=DEFAULT_FORMATTER):
 
 PYENV_HOME = Path.home().joinpath(".pyenv")
 VIRTUALENV_HOME = Path.home().joinpath(".virtualenvs")
-PYENV_VENV_HOME = PYENV_HOME.joinpath("versions")
 pyenv_versions = set()
 if PYENV_HOME.exists():
+    VIRTUALENV_HOME = PYENV_HOME.joinpath("versions")
     has_pyenv = True
     try:
         pyenv_versions = {
@@ -364,7 +364,7 @@ if PYENV_HOME.exists():
         }
         from_command = True
     except (subprocess.CalledProcessError, FileNotFoundError):
-        pyenv_versions = {d.name for d in PYENV_VENV_HOME.iterdir() if d.is_dir()}
+        pyenv_versions = {d.name for d in VIRTUALENV_HOME.iterdir() if d.is_dir()}
         from_command = False
     pyenv_versions.add("system")
 else:
@@ -420,20 +420,20 @@ if HAS_JEDI:
                 break
         return data
 
-    def append_project_venv(project):
+    def append_project_venv(project, cnf=None):
         if not project:
             return sys.path
         site.addsitedir(project.base_path)
         proj_name = project.name
-        cnf = configparser.ConfigParser()
-        cnf.read(project.file_name)
+        if cnf is None:
+            cnf = configparser.ConfigParser()
+            cnf.read(project.file_name)
         already_pth = cnf.get(NAME, PYTHON_PTH_LBL, fallback=None)
         if not already_pth:
             already_pth = proj_name
-        venv_pth = PYENV_VENV_HOME if has_pyenv else VIRTUALENV_HOME
-        if not venv_pth.is_dir():
+        if not VIRTUALENV_HOME.is_dir():
             return sys.path
-        for pth in venv_pth.iterdir():
+        for pth in VIRTUALENV_HOME.iterdir():
             if pth.name.startswith((already_pth, already_pth.lower())) and pth.is_dir():
                 st_pk = pth.glob("lib/python*/site-packages")
                 st_pk = next(st_pk) if st_pk else None
@@ -456,9 +456,7 @@ PYCODING_CNF = ("is_pyproj", "create_template", "mkvenv", PYTHON_PTH_LBL)
 
 def create_venv(proj_path, proj_name, python_pth):
     venvwrapper = None
-    already_venv = (
-        PYENV_VENV_HOME.joinpath(python_pth) if has_pyenv else VIRTUALENV_HOME.joinpath(python_pth)
-    )
+    already_venv = VIRTUALENV_HOME.joinpath(python_pth)
     if (
         not python_pth.lower().startswith(("3.", "pypy3"))
         and already_venv.joinpath("bin/python").exists()
@@ -467,7 +465,7 @@ def create_venv(proj_path, proj_name, python_pth):
     else:
         status = "{0} in python venv creation for project: {1}".format("{0}", proj_name)
         if has_pyenv:
-            project_venv = PYENV_VENV_HOME.joinpath(proj_name)
+            project_venv = VIRTUALENV_HOME.joinpath(proj_name)
             if proj_name not in pyenv_versions:
                 if from_command:
                     args = ["pyenv", "virtualenv", python_pth, proj_name]
@@ -475,7 +473,7 @@ def create_venv(proj_path, proj_name, python_pth):
                     args = "{0} -m venv {1}".format(
                         "python"
                         if python_pth == "system"
-                        else PYENV_VENV_HOME.joinpath(python_pth).joinpath("bin/python"),
+                        else VIRTUALENV_HOME.joinpath(python_pth).joinpath("bin/python"),
                         project_venv,
                     ).split()
                 subprocess.check_call(args)
@@ -498,10 +496,10 @@ def create_venv(proj_path, proj_name, python_pth):
                     str(project_venv),
                 ]
                 virtualenv.main()
-                venvwrapper = importlib.find_spec("virtualenvwrapper")
+                venvwrapper = is_mod_available("virtualenvwrapper")
     pyenv_versions.add(project_venv.name)
     try:
-        if project_venv.exists() and venvwrapper is not None:
+        if venvwrapper and project_venv.is_dir():
             project_pth = project_venv.joinpath(".project")
             with project_pth.open("w") as of:
                 of.write(str(proj_path))
@@ -933,49 +931,60 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if not self.is_doc_python(cur_doc):
             return
         proj = self.geany_plugin.geany_data.app.project
-        append_project_venv(proj)
-        try:
-            import pytest
-        except ImportError:
-            return
+        if proj:
+            cnf = configparser.ConfigParser()
+            cnf.read(proj.file_name)
         else:
-            from py.io import StdCapture
+            cnf = None
+        append_project_venv(proj, cnf=cnf)
+        if not is_mod_available("pytest"):
+            return
         fp = cur_doc.real_path or cur_doc.file_name
         if proj:
             os.chdir(proj.base_path)
+            if cnf:
+                already_pth = cnf.get(NAME, PYTHON_PTH_LBL, fallback="system")
+            else:
+                already_pth = "system"
+            pytest_cmd = (
+                "pytest"
+                if already_pth == "system"
+                else VIRTUALENV_HOME.joinpath(already_pth).joinpath("bin/pytest")
+            )
             fp = fp.replace(proj.base_path, ".")
         else:
+            pytest_cmd = "pytest"
             fp = cur_doc.file_name
-        capture = StdCapture()
-        pytest.main(["-p", "no:sugar" "-q", fp])
-        std, err = capture.reset()
-        if not (std or err):
-            return
-        err_data = std.strip() + "\n" + err.strip()
         err_lines = set()
         color = Geany.MsgColors.BLACK
         msgs = []
         ignore_count = 0
-        for lines in err_data.split("\n"):
-            if ignore_count < 3:
-                ignore_count += int(lines.startswith("="))
-                if ignore_count < 2:
+        with subprocess.Popen(
+            [pytest_cmd, "--tb=short", "-p", "no:sugar" "-q", fp],  # shorter traceback format
+            stdout=subprocess.PIPE,
+            bufsize=1,
+            universal_newlines=True,
+        ) as p:
+            for lines in p.stdout:
+                if ignore_count < 3:
+                    ignore_count += int(lines.startswith("="))
+                    if ignore_count < 2:
+                        continue
+                if "FAILED" in lines:
+                    color = Geany.MsgColors.RED
+                msgs.append(lines)
+                if os.path.basename(fp) not in lines:
                     continue
-            if "FAILED" in lines:
-                color = Geany.MsgColors.RED
-            msgs.append(lines)
-            if os.path.basename(fp) not in lines:
-                continue
-            reg_data = self.line_compile.search(lines)
-            if not reg_data:
-                continue
-            line = reg_data.group(2)
-            try:
-                line = int(line)
-            except (ValueError, TypeError):
-                continue
-            else:
-                err_lines.add(line)
+                reg_data = self.line_compile.search(lines)
+                if not reg_data:
+                    continue
+                line = reg_data.group(2)
+                try:
+                    line = int(line)
+                except (ValueError, TypeError):
+                    continue
+                else:
+                    err_lines.add(line)
 
         sci = cur_doc.editor.sci
         sci.send_message(
