@@ -76,7 +76,6 @@ DEFAULTS = {
         "options": lint_utils.LINTER_TYPES,
     },
 }
-HAS_JEDI = utils.jedi is not None
 
 DIR_LABEL = "Choose Python Path"
 
@@ -218,7 +217,9 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                         self.geany_plugin.geany_data.editor_prefs.line_break_column,
                     ),
                     linter=self.get_keyfile_pref(linter_key),
-                    syn_errors=utils.Script(contents).get_syntax_errors() if HAS_JEDI else [],
+                    syn_errors=utils.Script(contents).get_syntax_errors()
+                    if utils.jedi is not None
+                    else [],
                 )
             except Exception as err:
                 checks = [["fatal", 1, 0, str(err)]]
@@ -519,24 +520,17 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
 
     def on_pyproj_doc(self, cur_doc):
         proj = self.geany_plugin.geany_data.app.project
-        on_python_proj = proj and self.proj_settings.get(venv_utils.IS_PYPROJECT)
+        if not (proj and self.proj_settings.get(venv_utils.IS_PYPROJECT)):
+            return
         linter_cmd = venv_utils.get_possible_cmd(self.get_keyfile_pref(linter_key), project=proj)
         formatter_cmd = venv_utils.get_possible_cmd(
             self.get_keyfile_pref(formatter_key), project=proj
         )
-        print(formatter_cmd)
-        if on_python_proj:
-            file_name = " " + cur_doc.real_path.replace(proj.base_path, ".")
-            testing_cmd = self.proj_settings[test_utils.PYTHON_TESTING_LBL]
-            main_cmd = venv_utils.get_possible_cmd(venv_utils.py_cmd, project=proj)
-            bs = Geany.BuildSource.PROJ
-            wd = "%p"
-        elif not proj:
-            file_name = " %f"
-            bs = Geany.BuildSource.FT
-            wd = ""
-        else:
-            return
+        file_name = " " + cur_doc.real_path.replace(proj.base_path, ".")
+        testing_cmd = self.proj_settings[test_utils.PYTHON_TESTING_LBL]
+        main_cmd = venv_utils.get_possible_cmd(venv_utils.py_cmd, project=proj)
+        bs = Geany.BuildSource.PROJ
+        wd = "%p"
         for grp, rng in venv_utils.exec_cmds.items():
             for i in range(rng):
                 lbl = Geany.build_get_current_menu_item(grp, i, Geany.BuildCmdEntries.LABEL)
@@ -544,16 +538,14 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 cmd = None
                 if grp == Geany.BuildGroup.FT:
                     if "lint" in lbl_l or (i == 1 and not lbl):
-                        if on_python_proj or "/usr" in linter_cmd:
-                            cmd = linter_cmd + file_name
-                            lbl = "_Lint"
+                        cmd = linter_cmd + file_name
+                        lbl = "_Lint"
                     elif "format" in lbl_l or (i == 2 and not lbl):
-                        if on_python_proj or "/usr" in linter_cmd:
-                            cmd = formatter_cmd + file_name
-                            lbl = "_Format"
-                    elif i == 0 and on_python_proj:
+                        cmd = formatter_cmd + file_name
+                        lbl = "_Format"
+                    elif i == 0:
                         cmd = main_cmd + " -m py_compile " + file_name
-                elif on_python_proj:
+                else:
                     if "test" in lbl_l or (i == 1 and not lbl):
                         lbl = "_Test"
                         cmd = main_cmd + " -m {0} {1}".format(testing_cmd, file_name)
@@ -647,7 +639,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     def on_refactor_item_click(self, item=None):
         cur_doc = Geany.document_get_current()
         if not (
-            HAS_JEDI
+            utils.jedi is not None
             and self.is_doc_python(cur_doc)
             and self.get_keyfile_pref(jedi_key, pref_type=0)
         ):
@@ -742,7 +734,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
     def on_jgoto_item_click(self, item=None):
         cur_doc = Geany.document_get_current()
         if not (
-            HAS_JEDI
+            utils.jedi is not None
             and self.is_doc_python(cur_doc)
             and self.get_keyfile_pref(jedi_key, pref_type=0)
         ):
@@ -781,7 +773,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         is_pydoc_available = utils.parso is not None
         keys = self.add_key_group(
             venv_utils.NAME,
-            2 + int(is_pydoc_available) + (int(HAS_JEDI) * 2) + int(enable_pyconsole),
+            2
+            + int(is_pydoc_available)
+            + (int(utils.jedi is not None) * 2)
+            + int(enable_pyconsole),
         )
         fpc = _("Pycoding Run Formatter on File")
         self.format_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, fpc)
@@ -794,7 +789,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             self.document_item.connect("activate", self.on_documentation_item_click)
             geany_data.main_widgets.editor_menu.append(self.document_item)
             keys.add_keybinding("pycoding_generate_docstring", dpc, self.document_item, 0, 0)
-        if HAS_JEDI:
+        if utils.jedi is not None:
             rpc = _("Pycoding Refactor")
             self.refactor_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, rpc)
             self.refactor_item.connect("activate", self.on_refactor_item_click)
@@ -1036,7 +1031,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         pos = sci.get_current_position()
         if (
             not (
-                HAS_JEDI
+                utils.jedi is not None
                 and self.is_doc_python(cur_doc)
                 and self.get_keyfile_pref(jedi_key, pref_type=0)
             )
