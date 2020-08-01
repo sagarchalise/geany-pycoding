@@ -1,6 +1,7 @@
 import re
 import ast
 import inspect
+import doctest
 
 from gi.repository import Geany, Gtk
 
@@ -478,3 +479,26 @@ def start_jedi_refactor(content, file_name, line, column, action=None, action_ar
         return
     else:
         return ref
+
+
+def show_docstring(docstring):
+    Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
+    if not docstring:
+        return
+    if ">>>" in docstring:
+        try:
+            dt_parse = doctest.DocTestParser().parse(docstring)
+        except ValueError:
+            pass
+        else:
+            desc = []
+            for doc in dt_parse:
+                if not isinstance(doc, str):
+                    continue
+                sr_doc = doc.strip()
+                if not sr_doc or sr_doc == "\n":
+                    continue
+                desc.append(sr_doc)
+            docstring = "\n".join(desc)
+    Geany.msgwin_compiler_add_string(Geany.MsgColors.BLACK, "Doc:\n\n{0}".format(docstring))
+    Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.COMPILER, False)

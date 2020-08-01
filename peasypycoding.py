@@ -1,13 +1,11 @@
 import site
 import ctypes
-import doctest
 import inspect
 import keyword
 import itertools
-
+import functools
 import collections
 import configparser
-
 
 from pathlib import Path
 
@@ -165,9 +163,6 @@ class PythonPorjectDialog(utils.JediRefactorDialog):
         if response == Gtk.ResponseType.OK:
             widget.set_label(dialog.get_filename())
         dialog.destroy()
-
-
-test_sidebar = test_utils.PythonTestingWindow()
 
 
 class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
@@ -504,62 +499,69 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             self.testing_win.sidebar_page = self.geany_plugin.geany_data.main_widgets.sidebar_notebook.append_page(
                 self.testing_win.sidebar_window, Gtk.Label("Python Tests")
             )
-            test_module = self.proj_settings.get(test_utils.PYTHON_TESTING_LBL)
-            action = test_utils.MODULE_MAP.get(test_module).get("discover")
-            if isinstance(action, list):
-                python_cmd = venv_utils.get_possible_cmd(
-                    venv_utils.py_cmd, project=base_path, config=cnf
-                )
-                action = [python_cmd, "-m", test_module] + action
-            self.testing_win.setup_sidebar_treeview(action, base_path)
+            self.setup_sidebar_pyproj_test(refresh=False, cnf=cnf, base_path=base_path)
         if not self.testing_win.testout_page and base_path:
             self.testing_win.testout_page = self.geany_plugin.geany_data.main_widgets.message_window_notebook.append_page(
                 self.testing_win.testing_output_window, Gtk.Label("Pycoding Output")
             )
         self.testing_win.show_all_window()
+        self.testing_win.tree_view.connect("row-activated", self.on_pyproj_row_activate)
+
+    def on_pyproj_row_activate(self, view, path, column):
+        model = view.get_model()
+        rowiter = model.get_iter(path)
+        data = None
+        if rowiter:
+            data = model[rowiter][1:]
+        if not data:
+            return
+        file_name = data[1]
+        test_file = Path(self.geany_plugin.geany_data.app.project.base_path).joinpath(file_name)
+        if test_file.is_file():
+            doc = Geany.document_open_file(str(test_file), False, None, None,)
+        else:
+            doc = None
+        full_test = data[0]
+        line = 1
+        t = None
+        if not file_name.endswith((full_test, full_test + "/")):
+            q = Peasy.TagQuery.with_source(Peasy.TagQuerySource.SESSION_TAGS)
+            tag = full_test.split(".")
+            if len(tag) > 1:
+                tag = tag[1]
+            else:
+                tag = tag[0]
+            q.match_name(tag, len(tag))
+            for t in q.exec():
+                if t.file.file_name.endswith(file_name):
+                    break
+            else:  # nobreak
+                return
+            line = t.line
+        if doc is not None:
+            Geany.navqueue_goto_line(Geany.document_get_current(), doc, line)
+        self.on_pytest_click(
+            test_info={"file": file_name, "test": full_test if t else " ",}
+        )
 
     def on_pyproj_doc(self, cur_doc):
-        proj = self.geany_plugin.geany_data.app.project
-        if not (proj and self.proj_settings.get(venv_utils.IS_PYPROJECT)):
+        base_path, cnf = self.get_proj_bp_and_cnf()
+        if not base_path:
             return
-        linter_cmd = venv_utils.get_possible_cmd(self.get_keyfile_pref(linter_key), project=proj)
-        formatter_cmd = venv_utils.get_possible_cmd(
-            self.get_keyfile_pref(formatter_key), project=proj
+        linter_cmd = venv_utils.get_possible_cmd(
+            self.get_keyfile_pref(linter_key), project=base_path, config=cnf
         )
-        file_name = " " + cur_doc.real_path.replace(proj.base_path, ".")
+        formatter_cmd = venv_utils.get_possible_cmd(
+            self.get_keyfile_pref(formatter_key), project=base_path, config=cnf
+        )
+        file_name = " " + cur_doc.real_path.replace(base_path, ".")
         testing_cmd = self.proj_settings[test_utils.PYTHON_TESTING_LBL]
-        main_cmd = venv_utils.get_possible_cmd(venv_utils.py_cmd, project=proj)
-        bs = Geany.BuildSource.PROJ
-        wd = "%p"
-        for grp, rng in venv_utils.exec_cmds.items():
-            for i in range(rng):
-                lbl = Geany.build_get_current_menu_item(grp, i, Geany.BuildCmdEntries.LABEL)
-                lbl_l = (lbl or "").lower()
-                cmd = None
-                if grp == Geany.BuildGroup.FT:
-                    if "lint" in lbl_l or (i == 1 and not lbl):
-                        cmd = linter_cmd + file_name
-                        lbl = "_Lint"
-                    elif "format" in lbl_l or (i == 2 and not lbl):
-                        cmd = formatter_cmd + file_name
-                        lbl = "_Format"
-                    elif i == 0:
-                        cmd = main_cmd + " -m py_compile " + file_name
-                else:
-                    if "test" in lbl_l or (i == 1 and not lbl):
-                        lbl = "_Test"
-                        cmd = main_cmd + " -m {0} {1}".format(testing_cmd, file_name)
-                    elif i == 0:
-                        cmd = main_cmd + " " + file_name
-                if cmd is None or not lbl:
-                    continue
-                Geany.build_set_menu_item(bs, grp, i, Geany.BuildCmdEntries.COMMAND, cmd)
-                Geany.build_set_menu_item(
-                    bs, grp, i, Geany.BuildCmdEntries.WORKING_DIR, wd,
-                )
-                Geany.build_set_menu_item(
-                    bs, grp, i, Geany.BuildCmdEntries.LABEL, lbl,
-                )
+        main_cmd = venv_utils.get_possible_cmd(venv_utils.py_cmd, project=base_path, config=cnf)
+        venv_utils.executor.submit(
+            venv_utils.set_build_command(
+                [main_cmd, linter_cmd, formatter_cmd, testing_cmd], file_name
+            )
+        )
 
     def set_proj_settings(self, childrens):
         if not childrens:
@@ -595,15 +597,43 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             cnf = configparser.ConfigParser()
             cnf.read(proj.file_name)
             base_path = proj.base_path
+            if not (self.proj_settings and self.proj_settings.get(venv_utils.IS_PYPROJECT)):
+                base_path = None
+                cnf = None
         else:
             cnf = None
             base_path = None
         return base_path, cnf
 
-    def on_pytest_click(self, item=None):
-        cur_doc = Geany.document_get_current()
-        if not self.is_doc_python(cur_doc):
-            return True
+    def setup_sidebar_pyproj_test(self, base_path=None, cnf=None, refresh=False):
+        if not base_path:
+            base_path, cnf = self.get_proj_bp_and_cnf()
+        if not base_path:
+            return
+        test_module = self.proj_settings.get(test_utils.PYTHON_TESTING_LBL)
+        action = test_utils.MODULE_MAP.get(test_module).get("discover")
+        if isinstance(action, list):
+            python_cmd = venv_utils.get_possible_cmd(
+                venv_utils.py_cmd, project=base_path, config=cnf
+            )
+            test_cmd = [str(python_cmd), "-m", test_module] + action
+        else:
+            test_cmd = action
+        self.testing_win.setup_sidebar_treeview(test_cmd, base_path, refresh=refresh)
+
+    def on_pyproj_test_done(self, *args, all_test=False, cur_filename=None):
+        term = args[0]
+        if term:
+            text, _ = term.get_text_range(0, 0, term.get_row_count() + 1, 0)
+            filelists = test_utils.on_python_test_done(
+                text, filepath=cur_filename, all_tests=all_test,
+            )
+            if text:
+                Geany.msgwin_switch_tab(self.testing_win.testout_page, False)
+            if not filelists:
+                return
+
+    def on_pytest_click(self, item=None, run_all=False, test_info=None):
         base_path, cnf = self.get_proj_bp_and_cnf()
         if base_path is None:
             return True
@@ -611,29 +641,41 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         test_module = self.proj_settings.get(test_utils.PYTHON_TESTING_LBL)
         action = test_utils.MODULE_MAP.get(test_module).get("run")
         test_cmd = [str(python_cmd), "-m", test_module] + action
-        fp = cur_doc.real_path or cur_doc.file_name
-
-        def on_test_run_exit(*args):
-            term = args[0]
-            if term:
-                text, _ = term.get_text_range(0, 0, term.get_row_count() + 1, 0)
-                test_utils.on_python_test_done(
-                    text, filepath=cur_doc.real_path or cur_doc.file_name
-                )
-                if text:
-                    Geany.msgwin_switch_tab(self.testing_win.testout_page, False)
-
-        fp = fp.replace(base_path, "")
-        test_cmd.append(fp[1:] if fp.startswith("/") else fp)
-        self.testing_win.output_vte.connect("child-exited", on_test_run_exit)
+        fp = None
+        test_ = None
+        needs_check = not run_all and test_info is None
+        if needs_check:
+            cur_doc = Geany.document_get_current()
+            if not self.is_doc_python(cur_doc):
+                return True
+            fp = cur_doc.real_path or cur_doc.file_name
+        elif test_info:
+            fp = test_info["file"]
+            test_ = test_info["test"]
+        self.testing_win.output_vte.connect(
+            "child-exited",
+            functools.partial(self.on_pyproj_test_done, all_test=run_all, cur_filename=fp),
+        )
         self.testing_win.output_vte.reset(True, True)
+        if fp:
+            if test_:
+                test_ = test_.strip()
+                test_cmd.append(
+                    fp.replace(".py", ("." + test_) if test_ else "").replace("/", ".")
+                    if test_module == test_utils.NATIVE
+                    else (fp + ("::" + (test_.replace(".", "::")) if test_ else ""))
+                )
+            else:
+                fp = fp.replace(base_path, "")
+                test_cmd.append(fp[1:] if fp.startswith("/") else fp)
         venv_utils.executor.submit(
             test_utils.run_python_test_file,
             test_cmd,
             base_path,
             self.testing_win.output_vte,
-            check_first=True,
+            check_first=needs_check,
         )
+
         return True
 
     def on_refactor_item_click(self, item=None):
@@ -739,7 +781,14 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             and self.get_keyfile_pref(jedi_key, pref_type=0)
         ):
             return True
-        self.get_jedi_doc_and_signatures(cur_doc.editor, calltip=False)
+        self.get_jedi_doc_and_signatures(cur_doc.editor, calltip=False, doc=False, jump=True)
+
+    def on_pyproj_test_tb_click(self, button):
+        name = button.get_name()
+        if test_utils.tool_button_names[1] == name:
+            self.on_pytest_click(run_all=True)
+        elif test_utils.tool_button_names[0] == name:
+            self.setup_sidebar_pyproj_test(refresh=True)
 
     def do_enable(self):
         geany_data = self.geany_plugin.geany_data
@@ -812,7 +861,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.pytest_item.connect("activate", self.on_pytest_click)
         geany_data.main_widgets.tools_menu.append(self.pytest_item)
         keys.add_keybinding("pycoding_run_test", fpc, self.pytest_item, 0, 0)
-        self.testing_win = test_utils.PythonTestingWindow()
+        self.testing_win = test_utils.PythonTestingWindow(self.on_pyproj_test_tb_click)
         return True
 
     def do_disable(self):
@@ -945,7 +994,9 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             print(error)
             return
 
-    def get_jedi_doc_and_signatures(self, editor, pos=None, text=None, calltip=True):
+    def get_jedi_doc_and_signatures(
+        self, editor, pos=None, text=None, calltip=True, doc=True, jump=False
+    ):
         sci = editor.sci
         if pos is None:
             pos = sci.get_current_position()
@@ -984,31 +1035,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 data=complete.signature_,
             )
             sci.send_message(GeanyScintilla.SCI_CALLTIPSETHLT, 0, len(complete.signature_))
-        elif calltip is None:
-            docstring = complete.docstring_
-            Geany.msgwin_clear_tab(Geany.MessageWindowTabNum.COMPILER)
-            if not docstring:
-                return
-            if ">>>" in docstring:
-                try:
-                    dt_parse = doctest.DocTestParser().parse(docstring)
-                except ValueError:
-                    pass
-                else:
-                    desc = []
-                    for doc in dt_parse:
-                        if not isinstance(doc, str):
-                            continue
-                        sr_doc = doc.strip()
-                        if not sr_doc or sr_doc == "\n":
-                            continue
-                        desc.append(sr_doc)
-                    docstring = "\n".join(desc)
-            Geany.msgwin_compiler_add_string(
-                Geany.MsgColors.BLACK, "Doc:\n\n{0}".format(docstring)
-            )
-            Geany.msgwin_switch_tab(Geany.MessageWindowTabNum.COMPILER, False)
-        else:
+        if doc:
+            utils.show_docstring(complete.docstring_)
+
+        if jump:
             if complete.is_stub():
                 return
             mp = complete.module_path
@@ -1056,9 +1086,9 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                     Geany.KeyGroupID.EDITOR, Geany.KeyBindingID.EDITOR_COMPLETESNIPPET
                 )
                 return False
-            self.get_jedi_doc_and_signatures(editor, pos, text=nt_text)
+            self.get_jedi_doc_and_signatures(editor, pos, text=nt_text, doc=False)
         elif index == GeanyScintilla.SCN_AUTOCSELECTION:
-            self.get_jedi_doc_and_signatures(editor, pos, text=nt_text, calltip=None)
+            self.get_jedi_doc_and_signatures(editor, pos, text=nt_text, calltip=False)
         elif index == GeanyScintilla.SCN_DWELLSTART:
             self.get_jedi_doc_and_signatures(editor, nt.position)
         elif index == GeanyScintilla.SCN_DWELLEND:
@@ -1069,6 +1099,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 lparam=None,
                 data=None,
             )
+            utils.show_docstring(None)
         return False
 
     def complete_python(self, editor, char, pos=None):
@@ -1086,6 +1117,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 if cache_choice:
                     if len(cache_choice) == 1:
                         editor.insert_text_block(cache_choice.pop(), pos, -1, -1, True)
+                        utils.show_docstring(sym.docsting_)
                     else:
                         self.scintilla_command(
                             sci,

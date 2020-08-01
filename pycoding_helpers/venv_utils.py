@@ -53,9 +53,15 @@ def get_possible_venv_path(project, config=None):
         workdir_path = project.base_path
         proj_name = project.name
     if config is None:
-        config = configparser.ConfigParser()
-        config.read(project.file_name)
-    venv_name = config.get(NAME, PYTHON_PTH_LBL, fallback=None)
+        try:
+            config = configparser.ConfigParser()
+            config.read(project.file_name)
+        except AttributeError:
+            pass
+    try:
+        venv_name = config.get(NAME, PYTHON_PTH_LBL, fallback=None)
+    except AttributeError:
+        venv_name = None
     possible_venv_locs = {
         "venv",
         "~/.pyenv/versions",
@@ -203,3 +209,43 @@ def create_venv_for_project(proj_name, proj_path, python_cnf=None):
     if python_cnf.get("create_template"):
         future = executor.submit(create_proj_template, proj_path.joinpath(proj_name))
         future.add_done_callback(on_project_done)
+
+
+def set_build_command(commands, file_name):
+    cur_doc = Geany.document_get_current()
+    if not cur_doc:
+        return
+    if not cur_doc.real_path.endswith(file_name):
+        return
+    bs = Geany.BuildSource.PROJ
+    wd = "%p"
+    main_cmd, linter_cmd, formatter_cmd, testing_cmd = commands
+    for grp, rng in exec_cmds.items():
+        for i in range(rng):
+            lbl = Geany.build_get_current_menu_item(grp, i, Geany.BuildCmdEntries.LABEL)
+            lbl_l = (lbl or "").lower()
+            cmd = None
+            if grp == Geany.BuildGroup.FT:
+                if "lint" in lbl_l or (i == 1 and not lbl):
+                    cmd = linter_cmd + file_name
+                    lbl = "_Lint"
+                elif "format" in lbl_l or (i == 2 and not lbl):
+                    cmd = formatter_cmd + file_name
+                    lbl = "_Format"
+                elif i == 0:
+                    cmd = main_cmd + " -m py_compile " + file_name
+            else:
+                if "test" in lbl_l or (i == 1 and not lbl):
+                    lbl = "_Test"
+                    cmd = main_cmd + " -m {0} {1}".format(testing_cmd, file_name)
+                elif i == 0:
+                    cmd = main_cmd + " " + file_name
+            if cmd is None or not lbl:
+                continue
+            Geany.build_set_menu_item(bs, grp, i, Geany.BuildCmdEntries.COMMAND, cmd)
+            Geany.build_set_menu_item(
+                bs, grp, i, Geany.BuildCmdEntries.WORKING_DIR, wd,
+            )
+            Geany.build_set_menu_item(
+                bs, grp, i, Geany.BuildCmdEntries.LABEL, lbl,
+            )
