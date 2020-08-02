@@ -640,7 +640,6 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         python_cmd = venv_utils.get_possible_cmd(venv_utils.py_cmd, project=base_path, config=cnf)
         test_module = self.proj_settings.get(test_utils.PYTHON_TESTING_LBL)
         action = test_utils.MODULE_MAP.get(test_module).get("run")
-        test_cmd = [str(python_cmd), "-m", test_module] + action
         fp = None
         test_ = None
         needs_check = not run_all and test_info is None
@@ -657,17 +656,24 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             functools.partial(self.on_pyproj_test_done, all_test=run_all, cur_filename=fp),
         )
         self.testing_win.output_vte.reset(True, True)
+        test_cmd = [str(python_cmd), "-m", test_module]
         if fp:
             if test_:
                 test_ = test_.strip()
-                test_cmd.append(
-                    fp.replace(".py", ("." + test_) if test_ else "").replace("/", ".")
-                    if test_module == test_utils.NATIVE
-                    else (fp + ("::" + (test_.replace(".", "::")) if test_ else ""))
-                )
+                if test_module == test_utils.NATIVE:
+                    if Path(fp).is_dir():
+                        fp = (fp[:-1] if fp.endswith("/") else fp).replace("/", ".")
+                        test_cmd.append('discover')
+                    else:
+                        fp = fp.replace(".py", ("." + test_) if test_ else "").replace("/", ".")
+                else:
+                    fp = (fp + ("::" + (test_.replace(".", "::")) if test_ else ""))
             else:
                 fp = fp.replace(base_path, "")
-                test_cmd.append(fp[1:] if fp.startswith("/") else fp)
+                fp = fp[1:] if fp.startswith("/") else fp
+            test_cmd = test_cmd + action + [fp]
+        else:
+            test_cmd.extend(action)
         venv_utils.executor.submit(
             test_utils.run_python_test_file,
             test_cmd,
