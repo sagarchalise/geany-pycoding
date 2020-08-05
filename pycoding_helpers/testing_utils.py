@@ -105,7 +105,7 @@ def on_python_test_done(test_output, filepath=None, all_tests=False):
 
 def get_tree_store_with_collections(data, store=None, head=None, filename=None):
     if store is None:
-        store = Gtk.TreeStore(GdkPixbuf.Pixbuf, str, str)
+        store = Gtk.TreeStore(GdkPixbuf.Pixbuf, str, str, bool)
     if isinstance(data, dict):
         for k, v in data.items():
             if isinstance(v, dict):
@@ -118,7 +118,7 @@ def get_tree_store_with_collections(data, store=None, head=None, filename=None):
                 icon = Gtk.IconTheme.get_default().load_icon("text-x-script", 16, 0)
             else:
                 icon = Gtk.IconTheme.get_default().load_icon("folder", 16, 0)
-            inner_head = store.append(head, [icon, k, fn,],)
+            inner_head = store.append(head, [icon, k, fn, True],)
             store = get_tree_store_with_collections(test_list, store, head=inner_head, filename=fn)
     else:
         if not data:
@@ -130,6 +130,7 @@ def get_tree_store_with_collections(data, store=None, head=None, filename=None):
                     Gtk.IconTheme.get_default().load_icon("application-x-executable", 16, 0),
                     d,
                     filename,
+                    True,
                 ],
             )
     return store
@@ -164,8 +165,7 @@ class PythonTestingWindow:
         return window
 
     @staticmethod
-    def get_common_vbox():
-        box = Gtk.VBox(False, 0)
+    def get_common_toolbar():
         toolbar = Gtk.Toolbar()
         toolbar.set_icon_size(Gtk.IconSize.MENU)
         toolbar.set_style(Gtk.ToolbarStyle.ICONS)
@@ -179,17 +179,16 @@ class PythonTestingWindow:
         item.set_name(tool_button_names[1])
         item.set_tooltip_text("Run all tests")
         toolbar.add(item)
-        box.pack_start(toolbar, False, False, 0)
-        toolbar.show_all()
-        return box, toolbar
+        return toolbar
 
     def setup_sidebar_treeview(self, cmd, base_path, refresh=False):
+        tests = None
         if base_path != self.proj_path or refresh:
-            cur_store = self.tree_view.get_model()
-            if cur_store:
-                cur_store.clear()
-            tree_store = get_tree_store_with_collections(discover_tests(cmd, base_path))
-            self.tree_view.set_model(tree_store)
+            tests = discover_tests(cmd, base_path)
+            self.tree_store = get_tree_store_with_collections(tests)
+            self.tfilter = self.tree_store.filter_new()
+            self.tfilter.set_visible_column(3)
+            self.tree_view.set_model(self.tfilter)
         if not self.proj_path:
             icon_renderer = Gtk.CellRendererPixbuf()
             text_renderer = Gtk.CellRendererText()
@@ -200,43 +199,66 @@ class PythonTestingWindow:
             column_text.add_attribute(icon_renderer, "pixbuf", 0)
             column_text.add_attribute(text_renderer, "text", 1)
             self.tree_view.append_column(column_text)
-            renderer = Gtk.CellRendererPixbuf()
-            renderer.set_alignment(0.9, 0.9)
-            self.sbox.add(self.tree_view)
         self.proj_path = base_path
-        self.tree_view.show_all()
+        for child in self.sbox.get_children():
+            self.sbox.remove(child)
+        if tests:
+            self.sbox.pack_start(self.stoolbar, False, False, 0)
+            self.sbox.add(self.tree_view)
+        else:
+            self.sbox.add(self.no_test_wrn)
+            self.sbox.add(self.no_test_lbl)
         self.sbox.show_all()
 
-    def on_search(self, model, column, key, rowiter):
-        row = model[rowiter]
-        key = key.lower()
-        for r in row:
-            if not isinstance(r, str):
-                continue
-            if key in r:
-                self.tree_view.expand_row(row.path)
-
-        # Search in child rows.  If one of the rows matches, expand the row so that it will be open in later checks.
-        for inner in row.iterchildren():
-            #  if key.lower() in list(inner)[column - 1].lower():
-            #  self.treeview.expand_to_path(row.path)
-            #  break
-            for r in inner:
-                if not isinstance(r, str):
-                    continue
-                if key in r:
-                    self.tree_view.expand_row(row.path)
-                    self.tree_view.expand_row(inner.path)
-
+    def refresh_results(self, entry=None):
+        "Apply filtering to results"
+        search_query = entry.get_text().lower().strip()
+        if search_query:
+            self.tree_store.foreach(self.reset_row, False)
+            self.tree_store.foreach(self.show_matches, search_query)
+            self.tree_view.expand_all()
         else:
-            self.tree_view.collapse_row(row.path)
+            self.tree_store.foreach(self.reset_row, True)
+            self.tree_view.collapse_all()
+        self.tfilter.refilter()
 
-        return True  # Search does not match
+    def reset_row(self, model, path, iter, make_visible):
+        "Reset some row attributes independent of row hierarchy"
+        self.tree_store.set_value(iter, 3, make_visible)
+
+    def make_path_visible(self, model, iter):
+        "Make a row and its ancestors visible"
+        while iter:
+            self.tree_store.set_value(iter, 3, True)
+            iter = model.iter_parent(iter)
+
+    def make_subtree_visible(self, model, iter):
+        "Make descendants of a row visible"
+        for i in range(model.iter_n_children(iter)):
+            subtree = model.iter_nth_child(iter, i)
+            if model.get_value(subtree, 3):
+                # Subtree already visible
+                continue
+            self.tree_store.set_value(subtree, 3, True)
+            self.make_subtree_visible(model, subtree)
+
+    def show_matches(self, model, path, iter, search_query):
+        text = model.get_value(iter, 1).lower()
+        if search_query in text:
+            # Highlight direct match with bold
+            # Propagate visibility change up
+            self.make_path_visible(model, iter)
+            self.make_subtree_visible(model, iter)
+            return
 
     def set_sidebar_window(self):
+        self.no_test_lbl = Gtk.Label()
+        self.no_test_lbl.set_markup("<big><b>No <i>Tests</i> Found.</b></big>")
+        self.no_test_wrn = Gtk.Image.new_from_icon_name("dialog-warning", Gtk.IconSize.DIALOG)
         self.sidebar_page = 0
         self.sidebar_window = self.get_scrolled_window()
-        self.sbox, self.stoolbar = self.get_common_vbox()
+        self.sbox = Gtk.VBox(False, 0)
+        self.stoolbar = self.get_common_toolbar()
         for child in self.stoolbar.get_children():
             if not isinstance(child, Gtk.ToolButton):
                 continue
@@ -244,16 +266,13 @@ class PythonTestingWindow:
         self.sidebar_window.add(self.sbox)
         self.tree_view = Gtk.TreeView()
         self.tree_view.set_headers_visible(False)
-        #  entry = Gtk.SearchEntry()
-        #  toolitem = Gtk.ToolItem()
-        #  toolitem.add(entry)
-        #  toolitem.set_tooltip_text("Search Tests")
-        #  entry.show()
-        #  self.stoolbar.add(toolitem)
-        #  self.tree_view.set_search_entry(entry)
-        self.tree_view.set_search_column(1)
-        self.tree_view.set_enable_search(True)
-        #  self.tree_view.connect("start-interactive-search", self.on_search)
+        entry = Gtk.SearchEntry()
+        toolitem = Gtk.ToolItem()
+        toolitem.add(entry)
+        toolitem.set_tooltip_text("Search Tests")
+        entry.show()
+        entry.connect("changed", self.refresh_results)
+        self.stoolbar.add(toolitem)
 
     def set_testing_console(self):
         self.testout_page = 0
