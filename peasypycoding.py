@@ -212,9 +212,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                         self.geany_plugin.geany_data.editor_prefs.line_break_column,
                     ),
                     linter=self.get_keyfile_pref(linter_key),
-                    syn_errors=utils.Script(contents).get_syntax_errors()
-                    if utils.jedi is not None
-                    else [],
+                    syn_error_caller=utils.Script if utils.jedi is not None else None,
                 )
             except Exception as err:
                 checks = [["fatal", 1, 0, str(err)]]
@@ -663,11 +661,11 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
                 if test_module == test_utils.NATIVE:
                     if Path(fp).is_dir():
                         fp = (fp[:-1] if fp.endswith("/") else fp).replace("/", ".")
-                        test_cmd.append('discover')
+                        test_cmd.append("discover")
                     else:
                         fp = fp.replace(".py", ("." + test_) if test_ else "").replace("/", ".")
                 else:
-                    fp = (fp + ("::" + (test_.replace(".", "::")) if test_ else ""))
+                    fp = fp + ("::" + (test_.replace(".", "::")) if test_ else "")
             else:
                 fp = fp.replace(base_path, "")
                 fp = fp[1:] if fp.startswith("/") else fp

@@ -1,8 +1,18 @@
+import re
 import io
 import tokenize
 import importlib
 import operator
 import collections
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+try:
+    from mypy import api as mypy_api
+except ImportError:
+    mypy_api = None
+
+line_pattern = re.compile(r"([^:]+):(?:(\d+):)?(?:(\d+):)? (\w+): (.*)")
 
 
 def is_mod_available(modname):
@@ -210,19 +220,50 @@ def get_patched_checker(name=DEFAULT_LINTER):
         return check_and_get_results
 
 
-def check_python_code(filename, file_content, line_length, linter=DEFAULT_LINTER, syn_errors=None):
-    if syn_errors is None:
-        syn_errors = []
+executor = ThreadPoolExecutor(max_workers=3)
+
+
+def check_python_code(
+    filename, file_content, line_length, linter=DEFAULT_LINTER, syn_error_caller=None
+):
+    errors_future = []
+    if syn_error_caller is not None:
+        errors_future.append(executor.submit(syn_error_caller, file_content))
     check_and_get_results = get_patched_checker(name=linter)
     results = collections.defaultdict(dict)
     diagnostics = []
-    for result in check_and_get_results(filename, file_content, line_length):
-        severity, line, col, msg = result
-        start_line = max(line - 1, 0)
-        results[start_line][severity] = (col, msg)
-    for error in syn_errors:
-        act_line = error.line - 1
-        results[act_line]["fatal"] = (error.column, error.get_message())
+    errors_future.append(
+        executor.submit(check_and_get_results, filename, file_content, line_length)
+    )
+    if mypy_api:
+        args = [
+            "--incremental",
+            "--ignore-missing-imports",
+            "--show-column-numbers",
+            "--follow-imports",
+            "silent",
+            "--command",
+            file_content,
+        ]
+        errors_future.append(executor.submit(mypy_api.run, args))
+    for future in as_completed(errors_future):
+        res = future.result()
+        try:
+            for error in res.get_syntax_errors():
+                act_line = error.line - 1
+                results[act_line]["fatal"] = (error.column, error.get_message())
+        except AttributeError:
+            try:
+                for severity, line, col, msg in res:
+                    start_line = max(line - 1, 0)
+                    results[start_line][severity] = (col, msg)
+            except ValueError:
+                report, errors, _ = res
+                for line in report.splitlines():
+                    result = line_pattern.match(line)
+                    if result:
+                        _, lineno, offset, severity, msg = result.groups()
+                        results[int(lineno) - 1][severity] = (int(offset), msg)
 
     for line, vals in results.items():
         if vals:
