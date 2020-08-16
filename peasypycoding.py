@@ -404,6 +404,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             )
             self.testing_win.testout_page = 0
             self.testing_win.hide_all_window()
+            self.pytest_item.set_sensitive(False)
 
     def on_pyproj_open(self, obj, gtk_widget):
         self.properties_tab = Gtk.VBox(False, 0)
@@ -504,6 +505,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
             )
         self.testing_win.show_all_window()
         self.testing_win.tree_view.connect("row-activated", self.on_pyproj_row_activate)
+        self.pytest_item.set_sensitive(True)
 
     def on_pyproj_row_activate(self, view, path, column):
         model = view.get_model()
@@ -863,6 +865,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         rpf = _("Pycoding Run Test on File")
         self.pytest_item = Geany.ui_image_menu_item_new(Gtk.STOCK_EXECUTE, rpf)
         self.pytest_item.connect("activate", self.on_pytest_click)
+        self.pytest_item.set_sensitive(False)
         geany_data.main_widgets.tools_menu.append(self.pytest_item)
         keys.add_keybinding("pycoding_run_test", fpc, self.pytest_item, 0, 0)
         self.testing_win = test_utils.PythonTestingWindow(self.on_pyproj_test_tb_click)

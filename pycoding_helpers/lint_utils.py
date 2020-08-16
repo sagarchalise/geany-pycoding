@@ -264,7 +264,6 @@ def check_python_code(
                     if result:
                         _, lineno, offset, severity, msg = result.groups()
                         results[int(lineno) - 1][severity] = (int(offset), msg)
-
     for line, vals in results.items():
         if vals:
             severity = ""
@@ -272,6 +271,8 @@ def check_python_code(
             min_col = -5
             for sev, messages in vals.items():
                 col, message = messages
+                if message in msg:
+                    continue
                 if not severity:
                     msg += message
                 else:
