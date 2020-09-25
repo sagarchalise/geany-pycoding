@@ -49,18 +49,27 @@ common_doc_kw = {"Yields", "Returns", "Raises"}
 DEFAULT_DOCSTRING = "google"
 doc_map_list = {
     "reST": {
-        "templates": {"maps": ":{3} {1}{0}: {2}", "type": ":{2}type {1}: {0}",},
+        "templates": {
+            "maps": ":{3} {1}{0}: {2}",
+            "type": ":{2}type {1}: {0}",
+        },
         "args": "param",
         "attrs": "var",
     },
     DEFAULT_DOCSTRING: {
-        "templates": {"maps": "{0} {1}: {2}", "type": "({0}{1})",},
+        "templates": {
+            "maps": "{0} {1}: {2}",
+            "type": "({0}{1})",
+        },
         "args": "Args:",
         "attrs": "Attributes:",
         "kargs": "Keyword Args:",
     },
     "numpy": {
-        "templates": {"maps": "{0} {1}", "type": ": {0}{1}",},
+        "templates": {
+            "maps": "{0} {1}",
+            "type": ": {0}{1}",
+        },
         "args": "Parameters",
         "attrs": "Attributes",
     },
@@ -95,7 +104,8 @@ class JediRefactorDialog(Gtk.Dialog):
     def __init__(self, parent, title, button_text):
         super().__init__(title, parent, Gtk.DialogFlags.DESTROY_WITH_PARENT)
         self.add_buttons(
-            button_text, Gtk.ResponseType.OK,
+            button_text,
+            Gtk.ResponseType.OK,
         )
 
     def set_and_show(self, gettext_func):

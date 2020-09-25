@@ -244,8 +244,16 @@ def set_build_command(commands, file_name):
                 continue
             Geany.build_set_menu_item(bs, grp, i, Geany.BuildCmdEntries.COMMAND, cmd)
             Geany.build_set_menu_item(
-                bs, grp, i, Geany.BuildCmdEntries.WORKING_DIR, wd,
+                bs,
+                grp,
+                i,
+                Geany.BuildCmdEntries.WORKING_DIR,
+                wd,
             )
             Geany.build_set_menu_item(
-                bs, grp, i, Geany.BuildCmdEntries.LABEL, lbl,
+                bs,
+                grp,
+                i,
+                Geany.BuildCmdEntries.LABEL,
+                lbl,
             )

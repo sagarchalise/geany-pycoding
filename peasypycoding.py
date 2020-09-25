@@ -34,7 +34,10 @@ ENABLE_CONFIGS = {
         _("Initialize Python Project Properties."),
         _("Requires pyenv, virtualenv or venv."),
     ),
-    jedi_key: (_("Jedi Completion/Documentation/Signatures for Python."), _("Requires jedi."),),
+    jedi_key: (
+        _("Jedi Completion/Documentation/Signatures for Python."),
+        _("Requires jedi."),
+    ),
     autolint_key: (
         _("Enable auto lint on save."),
         _("Requires linting config in build or linter for annotation."),
@@ -495,13 +498,17 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         venv_utils.create_venv_for_project(proj_name, base_path, self.proj_settings)
         self.set_proj_env(cnf)
         if not self.testing_win.sidebar_page and base_path:
-            self.testing_win.sidebar_page = self.geany_plugin.geany_data.main_widgets.sidebar_notebook.append_page(
-                self.testing_win.sidebar_window, Gtk.Label("Python Tests")
+            self.testing_win.sidebar_page = (
+                self.geany_plugin.geany_data.main_widgets.sidebar_notebook.append_page(
+                    self.testing_win.sidebar_window, Gtk.Label("Python Tests")
+                )
             )
             self.setup_sidebar_pyproj_test(refresh=False, cnf=cnf, base_path=base_path)
         if not self.testing_win.testout_page and base_path:
-            self.testing_win.testout_page = self.geany_plugin.geany_data.main_widgets.message_window_notebook.append_page(
-                self.testing_win.testing_output_window, Gtk.Label("Pycoding Output")
+            self.testing_win.testout_page = (
+                self.geany_plugin.geany_data.main_widgets.message_window_notebook.append_page(
+                    self.testing_win.testing_output_window, Gtk.Label("Pycoding Output")
+                )
             )
         self.testing_win.show_all_window()
         self.testing_win.tree_view.connect("row-activated", self.on_pyproj_row_activate)
@@ -518,7 +525,12 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         file_name = data[1]
         test_file = Path(self.geany_plugin.geany_data.app.project.base_path).joinpath(file_name)
         if test_file.is_file():
-            doc = Geany.document_open_file(str(test_file), False, None, None,)
+            doc = Geany.document_open_file(
+                str(test_file),
+                False,
+                None,
+                None,
+            )
         else:
             doc = None
         full_test = data[0]
@@ -541,7 +553,10 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if doc is not None:
             Geany.navqueue_goto_line(Geany.document_get_current(), doc, line)
         self.on_pytest_click(
-            test_info={"file": file_name, "test": full_test if t else " ",}
+            test_info={
+                "file": file_name,
+                "test": full_test if t else " ",
+            }
         )
 
     def on_pyproj_doc(self, cur_doc):
@@ -626,7 +641,9 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         if term:
             text, _ = term.get_text_range(0, 0, term.get_row_count() + 1, 0)
             filelists = test_utils.on_python_test_done(
-                text, filepath=cur_filename, all_tests=all_test,
+                text,
+                filepath=cur_filename,
+                all_tests=all_test,
             )
             if text:
                 Geany.msgwin_switch_tab(self.testing_win.testout_page, False)
@@ -916,11 +933,14 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
 
     @staticmethod
     def check_doc_is_python(doc):
-        return (
-            doc is not None
-            and doc.is_valid
-            and doc.file_type.id == Geany.FiletypeID.FILETYPES_PYTHON
-        )
+        try:
+            return (
+                doc is not None
+                and doc.is_valid
+                and doc.file_type.id == Geany.FiletypeID.FILETYPES_PYTHON
+            )
+        except ValueError:
+            return False
 
     def is_doc_python(self, doc):
         is_python = self.check_doc_is_python(doc)
@@ -950,7 +970,9 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         data = ""
         fp = cur_doc.real_path or cur_doc.file_name
         self.jedi_script = utils.Script(
-            doc_content, path=fp, project=self.proj_env or utils.jedi.Project(Path(fp).parent),
+            doc_content,
+            path=fp,
+            project=self.proj_env or utils.jedi.Project(Path(fp).parent),
         )
         stop_len = self.geany_plugin.geany_data.editor_prefs.autocompletion_max_entries
         try:

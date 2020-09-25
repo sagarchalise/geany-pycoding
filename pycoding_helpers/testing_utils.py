@@ -93,7 +93,9 @@ def on_python_test_done(test_output, filepath=None, all_tests=False):
         GeanyScintilla.SC_MARK_BACKGROUND,
     )
     sci.send_message(
-        GeanyScintilla.SCI_MARKERSETALPHA, GeanyScintilla.SC_MARK_BACKGROUND, 40,
+        GeanyScintilla.SCI_MARKERSETALPHA,
+        GeanyScintilla.SC_MARK_BACKGROUND,
+        40,
     )
     not_set = True
     for line in sorted(err_lines):
@@ -118,7 +120,10 @@ def get_tree_store_with_collections(data, store=None, head=None, filename=None):
                 icon = Gtk.IconTheme.get_default().load_icon("text-x-script", 16, 0)
             else:
                 icon = Gtk.IconTheme.get_default().load_icon("folder", 16, 0)
-            inner_head = store.append(head, [icon, k, fn, True],)
+            inner_head = store.append(
+                head,
+                [icon, k, fn, True],
+            )
             store = get_tree_store_with_collections(test_list, store, head=inner_head, filename=fn)
     else:
         if not data:
