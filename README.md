@@ -13,7 +13,7 @@
 * Show docstring when autocomplete is completed on compiler window.
 * Show `calltip` of signatures if available when hovering over with mouse or autocomplete is done.
 * Jump to source module if availabe through keybinding or editor menu.
-* Genrate docstring on `class` or `def` definition from menu or keybinding.
+* Genrate docstring based on `doq` with keybinding or menu.
 
 #### Project based approach.
 

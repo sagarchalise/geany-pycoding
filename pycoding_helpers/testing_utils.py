@@ -2,7 +2,12 @@ import os
 import re
 import unittest
 import collections
-from gi.repository import Geany, GeanyScintilla, Gtk, GdkPixbuf, Vte, GLib, Peasy
+from gi.repository import Geany
+from gi.repository import GeanyScintilla
+from gi.repository import Gtk
+from gi.repository import GdkPixbuf
+from gi.repository import Vte
+from gi.repository import GLib
 
 try:
     import pty

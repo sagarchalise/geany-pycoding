@@ -842,7 +842,7 @@ class PycodingPlugin(Peasy.Plugin, Peasy.PluginConfigure):
         self.set_format_signal_handler(o)
         self.jedi_handler = o.connect("editor-notify", self.on_editor_notify)
         enable_pyconsole = self.get_keyfile_pref(pyconsole_key, pref_type=0)
-        is_pydoc_available = utils.parso is not None
+        is_pydoc_available = utils.doq is not None
         keys = self.add_key_group(
             venv_utils.NAME,
             2
